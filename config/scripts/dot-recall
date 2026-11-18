@@ -1,0 +1,211 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot recall — search everything your commands printed, even after you closed the tab.
+
+WezTerm keeps the output of each command (secrets masked, full-screen apps
+skipped) in ~/.local/share/dotfiles/recall/ for 30 days (DOT_RECALL_DAYS).
+Nothing leaves the machine unless you use --ai, which asks Claude through
+your subscription (dot-ai) about the matching bits only.
+
+  dot recall PATTERN             outputs (or commands) matching PATTERN (regex, any case)
+  dot recall PATTERN --cmd       match only the command line
+  dot recall PATTERN --here      only commands run in this repo / folder
+  dot recall --last 5            the last 5 outputs
+  dot recall --days 3 PATTERN    only the last 3 days
+  dot recall --ai "what port did the api say it was on yesterday?"
+  dot recall --forget            delete everything kept so far
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+DIR = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share")) / "dotfiles" / "recall"
+KEEP_DAYS = int(os.environ.get("DOT_RECALL_DAYS", "30"))
+SCRIPTS = Path(__file__).resolve().parent
+C = sys.stdout.isatty()
+
+
+def col(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if C else s
+
+
+def prune() -> None:
+    if not DIR.exists():
+        return
+    cutoff = dt.date.today() - dt.timedelta(days=KEEP_DAYS)
+    for f in DIR.glob("*.jsonl"):
+        try:
+            if dt.date.fromisoformat(f.stem) < cutoff:
+                f.unlink()
+        except ValueError:
+            pass
+
+
+def entries(days: int | None):
+    """Newest first."""
+    if not DIR.exists():
+        return
+    files = sorted(DIR.glob("*.jsonl"), reverse=True)
+    if days is not None:
+        cutoff = dt.date.today() - dt.timedelta(days=days)
+        files = [f for f in files if _date(f) and _date(f) >= cutoff]
+    for f in files:
+        lines = f.read_text(errors="ignore").splitlines()
+        for line in reversed(lines):
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def _date(f: Path):
+    try:
+        return dt.date.fromisoformat(f.stem)
+    except ValueError:
+        return None
+
+
+def when(e: dict) -> str:
+    try:
+        t = dt.datetime.fromisoformat(e["t"].replace("Z", "+00:00")).astimezone()
+    except (KeyError, ValueError):
+        return "?"
+    today = dt.date.today()
+    if t.date() == today:
+        return t.strftime("today %H:%M")
+    if t.date() == today - dt.timedelta(days=1):
+        return t.strftime("yesterday %H:%M")
+    return t.strftime("%a %d %b %H:%M")
+
+
+def short(path: str) -> str:
+    h = str(HOME)
+    return "~" + path[len(h):] if path.startswith(h) else path
+
+
+def header(e: dict) -> str:
+    st = e.get("status")
+    mark = col("32", "✓") if st == 0 else col("31", f"✗{st}")
+    return f"{col('2', when(e))}  {col('2', short(e.get('cwd', '')))}  {mark} {col('1;36', e.get('cmd', ''))}"
+
+
+def snippet(text: str, rx: re.Pattern | None, ctx: int = 2, max_hits: int = 4) -> list[str]:
+    lines = text.splitlines()
+    if rx is None:
+        return lines[-12:] if len(lines) > 12 else lines
+    keep: list[int] = []
+    for i, l in enumerate(lines):
+        if rx.search(l):
+            keep.extend(range(max(0, i - ctx), min(len(lines), i + ctx + 1)))
+            if len(set(keep)) > max_hits * (2 * ctx + 1):
+                break
+    out, last = [], -2
+    for i in sorted(set(keep)):
+        if i != last + 1 and out:
+            out.append(col("2", "  ┄"))
+        l = lines[i]
+        out.append(rx.sub(lambda m: col("1;33", m.group(0)), l) if C else l)
+        last = i
+    return out
+
+
+def here_root() -> str:
+    r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else os.getcwd()
+
+
+def ask_ai(question: str, days: int | None, here: str | None) -> None:
+    ai = SCRIPTS / "dot-ai"
+    words = [w for w in re.findall(r"[\w.:/-]{3,}", question) if w.lower() not in
+             {"what", "which", "when", "where", "did", "the", "was", "yesterday", "today", "say", "said", "from",
+              "that", "this", "with", "and", "for", "how", "why", "last", "week", "show", "find", "port"}]
+    rx = re.compile("|".join(map(re.escape, words)), re.I) if words else None
+    picked, size = [], 0
+    for e in entries(days if days is not None else 7):
+        if here and not e.get("cwd", "").startswith(here):
+            continue
+        blob = e.get("cmd", "") + "\n" + e.get("out", "")
+        if rx and not rx.search(blob) and len(picked) >= 5:
+            continue
+        part = f"## {when(e)} · {short(e.get('cwd', ''))} · exit {e.get('status')}\n$ {e.get('cmd')}\n{e.get('out', '')[-3000:]}\n"
+        if size + len(part) > 60000:
+            break
+        picked.append(part)
+        size += len(part)
+        if len(picked) >= 40:
+            break
+    if not picked:
+        sys.exit("dot recall: nothing kept yet")
+    system = ("You answer questions about the user's past terminal sessions. Use only the transcript given. "
+              "Be short and concrete; quote the exact value or line that answers it and say when/where it was "
+              "(the ## header). If it isn't in the transcript, say so.")
+    r = subprocess.run([str(ai), "--system", system, question], input="\n".join(picked), text=True)
+    sys.exit(r.returncode)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("pattern", nargs="?")
+    p.add_argument("--last", type=int, metavar="N")
+    p.add_argument("--days", type=int)
+    p.add_argument("--cmd", action="store_true", help="match the command line only")
+    p.add_argument("--here", action="store_true", help="only this repo / folder")
+    p.add_argument("--ai", metavar="QUESTION")
+    p.add_argument("--forget", action="store_true")
+    p.add_argument("--limit", type=int, default=15)
+    a = p.parse_args()
+
+    prune()
+    if a.forget:
+        if DIR.exists():
+            shutil.rmtree(DIR)
+        print("recall: forgotten")
+        return
+    here = here_root() if a.here else None
+    if a.ai:
+        ask_ai(a.ai, a.days, here)
+    if not a.pattern and not a.last:
+        p.print_help()
+        n = sum(1 for _ in entries(None))
+        print(f"\n{n} output(s) kept in {short(str(DIR))}")
+        return
+    rx = re.compile(a.pattern, re.I) if a.pattern else None
+    shown = 0
+    limit = a.last or a.limit
+    for e in entries(a.days):
+        if here and not e.get("cwd", "").startswith(here):
+            continue
+        out = e.get("out", "")
+        if rx:
+            hit_cmd = bool(rx.search(e.get("cmd", "")))
+            hit_out = (not a.cmd) and bool(rx.search(out))
+            if not (hit_cmd or hit_out):
+                continue
+            body = snippet(out, rx if hit_out else None)
+        else:
+            body = snippet(out, None)
+        print(header(e))
+        for l in body:
+            print("  " + l)
+        print()
+        shown += 1
+        if shown >= limit:
+            break
+    if not shown:
+        print("nothing found" + (f" for /{a.pattern}/" if a.pattern else ""))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

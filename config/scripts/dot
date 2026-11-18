@@ -16,6 +16,11 @@
 #   dot games           list saves
 #   dot sync-history    sync shell history between your machines (atuin + Bitwarden)
 #   dot sessions [kill] WezTerm tabs kept in the background / end them all
+#   dot new NAME        new project from Kaine Forge (--client acme, --local, --dry-run)
+#   dot night "repo: task"  Claude works on it overnight in a worktree (dot night = queue)
+#   dot recall PATTERN  search what your commands printed (--ai "question", --last 5)
+#   dot habits          turn long commands you keep typing into aliases
+#   dot mode share [CLIENT]  screen-share mode (dot mode work to end)
 #   cd "$(dot dir)"     go to the repo
 set -euo pipefail
 
@@ -84,6 +89,13 @@ Work (AI uses your Claude subscription only — never an API key)
   dot note "text"     note what happened; ends up in standups and client updates
   dot clients         which repo belongs to which client (--init creates the list)
   dot upgrade         pull the dotfiles and upgrade tools (was `dot update`)
+  dot new portal --client acme   new repo from Kaine Forge: adopted, AI set up, CI, workspace
+  dot night "api: fix the flaky test"   Claude does it at 01:30 in a worktree; morning report at
+                      your first prompt → dot night diff / pr / open ID (never pushes by itself)
+  dot recall "5173"   find anything a command printed, even in closed tabs (--ai "question")
+  dot habits          your long repeated commands → aliases or navi recipes (hint once a week)
+  dot mode share acme screen share: bigger font, no notifications, other clients' tabs hidden,
+                      `cat .env`-style commands ask twice · dot mode work = back to normal
 
 Neovim
   Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
@@ -197,6 +209,25 @@ case "${1:-help}" in
             exec uv run --quiet --script "$work" "$@"
         elif python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
             exec python3 "$work" "$@"
+        else
+            echo "dot: needs uv or Python 3.11+ (run install.sh)" >&2; exit 1
+        fi
+        ;;
+    new)
+        shift
+        exec "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-new" "$@"
+        ;;
+    mode)
+        shift
+        exec "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-mode" "$@"
+        ;;
+    night|recall|habits)
+        tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-$1"
+        shift
+        if command -v uv >/dev/null 2>&1; then
+            exec uv run --quiet --script "$tool" "$@"
+        elif python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+            exec python3 "$tool" "$@"
         else
             echo "dot: needs uv or Python 3.11+ (run install.sh)" >&2; exit 1
         fi

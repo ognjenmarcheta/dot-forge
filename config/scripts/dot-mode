@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# dot mode share [CLIENT]   before a screen share / client call:
+#     bigger font, desktop + WezTerm notifications off, tabs and badges of other
+#     projects hidden (only CLIENT's repos — or the current repo — show), a red
+#     SHARING badge, and (zsh) commands that would print secrets ask twice
+# dot mode work              everything back to normal
+# dot mode                   which mode you're in
+set -uo pipefail
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles"
+state="$state_dir/mode"
+here="$(cd -- "$(dirname -- "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+
+uservar() { # name json — tell WezTerm (works in any WezTerm pane)
+    [ "${TERM_PROGRAM:-}" = WezTerm ] || return 0
+    printf '\033]1337;SetUserVar=%s=%s\007' "$1" "$(printf '%s' "$2" | base64 | tr -d '\n')"
+}
+
+work_py() {
+    if command -v uv >/dev/null 2>&1; then uv run --quiet --script "$here/dot-work" "$@"
+    else python3 "$here/dot-work" "$@"; fi
+}
+
+case "${1:-status}" in
+    share)
+        client="${2:-}"
+        if [ -n "$client" ]; then
+            info="$(work_py clients --show "$client")" || exit 1
+            paths="$(printf '%s' "$info" | jq -r '.paths[]')"
+            label="$(printf '%s' "$info" | jq -r '.name')"
+        else
+            paths="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+            label="$(basename "$paths")"
+        fi
+        mkdir -p "$state_dir"
+        banners="$(sed -n 's/^banners=//p' "$state" 2>/dev/null)"   # already sharing: keep the original
+        if command -v gsettings >/dev/null 2>&1; then
+            [ -n "$banners" ] || banners="$(gsettings get org.gnome.desktop.notifications show-banners 2>/dev/null)"
+            gsettings set org.gnome.desktop.notifications show-banners false 2>/dev/null
+        fi
+        { echo "mode=share"; echo "label=$label"; echo "banners=$banners"; } > "$state"
+        json="$(printf '%s\n' "$paths" | jq -R . | jq -sc --arg label "$label" '{mode: "share", label: $label, paths: map(select(. != ""))}')"
+        uservar dot_mode "$json"
+        printf '\033[1;31m● sharing: %s\033[0m — bigger font, notifications off, other projects hidden.\n' "$label"
+        # shellcheck disable=SC2016
+        printf '  \033[2m`dot mode work` when the call is over.\033[0m\n'
+        [ "$(uname -s)" = Darwin ] && printf '  \033[2mmacOS: turn on a Focus mode for system notifications.\033[0m\n'
+        ;;
+    work)
+        if [ -f "$state" ]; then
+            banners="$(sed -n 's/^banners=//p' "$state")"
+            if [ -n "$banners" ] && command -v gsettings >/dev/null 2>&1; then
+                gsettings set org.gnome.desktop.notifications show-banners "$banners" 2>/dev/null
+            fi
+            rm -f "$state"
+        fi
+        uservar dot_mode '{"mode":"work"}'
+        echo "✓ back to normal"
+        ;;
+    status|"")
+        if [ -f "$state" ]; then echo "sharing: $(sed -n 's/^label=//p' "$state")  (dot mode work)"; else echo "normal"; fi
+        ;;
+    *)
+        sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

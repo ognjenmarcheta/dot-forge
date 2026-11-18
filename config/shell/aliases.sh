@@ -32,6 +32,9 @@ case ":$PATH:" in
     *) PATH="$PATH:$HOME/.config/scripts" ;;  # dot, herdr-*, check-node-updates.sh
 esac
 export PATH
+# Graphviz has a `dot` too and comes first in PATH; in your shell `dot` is this
+# repo's (programs that need Graphviz still find theirs)
+dot() { "$HOME/.config/scripts/dot" "$@"; }
 
 export EDITOR="${EDITOR:-nvim}" VISUAL="${VISUAL:-nvim}"
 
@@ -187,6 +190,15 @@ export GITHUB_USER="${GITHUB_USER:-ognjenmarcheta}"
 
 # --- Self-healing typos: suggested fix after a failed command (F1 uses it) ----
 [ -f "$HOME/.config/shell/fix.sh" ] && . "$HOME/.config/shell/fix.sh"
+
+# --- Shortcuts you accepted from `dot habits` ----------------------------------
+[ -f "$HOME/.config/shell/habits.sh" ] && . "$HOME/.config/shell/habits.sh"
+
+# --- Once a day: night shift report, habits hint (dot night / dot habits) -------
+[ -f "$HOME/.config/shell/daily.sh" ] && . "$HOME/.config/shell/daily.sh"
+
+# --- Share mode guard: commands that print secrets ask twice (dot mode share) -
+[ -f "$HOME/.config/shell/share.sh" ] && . "$HOME/.config/shell/share.sh"
 
 # --- Project lobby: welcome card when you come back to a repo after days -----
 [ -f "$HOME/.config/shell/lobby.sh" ] && . "$HOME/.config/shell/lobby.sh"

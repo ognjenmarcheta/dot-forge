@@ -7,7 +7,7 @@ name: macOS
 on:
   push:
     branches: [main]
-    paths: [install.sh, Brewfile, tests/**, config/shell/**, .github/workflows/macos.yml]
+    paths: [install.sh, Brewfile, tests/**, config/shell/**, config/scripts/**, .github/workflows/macos.yml]
   workflow_dispatch:
   schedule:
     - cron: "41 5 3 * *"
@@ -39,3 +39,5 @@ jobs:
         run: /bin/bash ./install.sh
       - name: Doctor + Neovim smoke test
         run: /bin/bash tests/doctor.sh --nvim
+      - name: night shift / recall / habits / share mode / dot new (BSD tools, bash 3.2)
+        run: /bin/bash tests/features.sh

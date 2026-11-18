@@ -532,6 +532,62 @@ install_nvim_plugins() {
     ok "done — open nvim once; Mason then installs the language servers"
 }
 
+setup_night_shift() {
+    # dot night: run queued Claude Code tasks at 01:30 (systemd user timer on
+    # Linux, launchd on macOS). Runs nothing when the queue is empty.
+    [ "$IN_CI" -eq 1 ] && return 0
+    step "Night shift scheduler (dot night, 01:30)"
+    local path_line="$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    if [ "$OS" = Darwin ]; then
+        local plist="$HOME/Library/LaunchAgents/software.byteforge.dot-night.plist"
+        mkdir -p "$(dirname "$plist")" "$HOME/.local/share/dotfiles/night"
+        cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>software.byteforge.dot-night</string>
+  <key>ProgramArguments</key><array><string>$HOME/.config/scripts/dot</string><string>night</string><string>run</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$path_line</string></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>$HOME/.local/share/dotfiles/night/run.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.local/share/dotfiles/night/run.log</string>
+</dict></plist>
+EOF
+        launchctl unload "$plist" 2>/dev/null || true
+        launchctl load "$plist" 2>/dev/null && ok "launchd job loaded" || warn "launchctl load failed — log out and in"
+        return 0
+    fi
+    have systemctl || { warn "no systemd — run dot night run yourself (or from cron)"; return 0; }
+    local d="$HOME/.config/systemd/user"
+    mkdir -p "$d"
+    cat > "$d/dot-night.service" <<EOF
+[Unit]
+Description=dot night: queued Claude Code tasks
+
+[Service]
+Type=oneshot
+Environment=PATH=$path_line
+ExecStart=$HOME/.config/scripts/dot night run
+TimeoutStartSec=12h
+EOF
+    cat > "$d/dot-night.timer" <<'EOF'
+[Unit]
+Description=dot night at 01:30
+
+[Timer]
+OnCalendar=*-*-* 01:30:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+    if systemctl --user daemon-reload 2>/dev/null && systemctl --user enable --now dot-night.timer >/dev/null 2>&1; then
+        ok "dot-night.timer on (systemctl --user list-timers)"
+    else
+        warn "couldn't enable the timer — systemctl --user enable --now dot-night.timer"
+    fi
+}
+
 main() {
     printf '%sDotfiles%s from %s on %s/%s\n' "$c_info" "$c_off" "$(tilde "$DOTFILES")" "$OS" "$ARCH"
     mkdir -p "$BIN"
@@ -552,6 +608,7 @@ main() {
         install_claude_code
         setup_tools
         setup_claude_hooks
+        setup_night_shift
         setup_git_identity
         setup_default_shell
         setup_gh
