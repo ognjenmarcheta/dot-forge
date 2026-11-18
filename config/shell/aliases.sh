@@ -188,6 +188,12 @@ export GITHUB_USER="${GITHUB_USER:-ognjenmarcheta}"
 # --- Self-healing typos: suggested fix after a failed command (F1 uses it) ----
 [ -f "$HOME/.config/shell/fix.sh" ] && . "$HOME/.config/shell/fix.sh"
 
+# --- Project lobby: welcome card when you come back to a repo after days -----
+[ -f "$HOME/.config/shell/lobby.sh" ] && . "$HOME/.config/shell/lobby.sh"
+
+# --- Push-to-talk: Alt+V, speak, any key -> `ai "…"` (local speech-to-text) ----
+[ -f "$HOME/.config/shell/voice.sh" ] && . "$HOME/.config/shell/voice.sh"
+
 # --- ai: plain-English -> shell command via Claude Code ----------------------
 [ -f "$HOME/.config/shell/ai.sh" ] && . "$HOME/.config/shell/ai.sh"
 

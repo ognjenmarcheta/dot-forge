@@ -53,6 +53,23 @@ local function toast(window, title, body, ms)
     window:toast_notification(title, body or "", nil, ms or 4000)
 end
 
+local function write_private_file(path, text)
+    if is_flatpak then
+        -- the sandbox sees $HOME read-only: write it on the host
+        wezterm.run_child_process(host_cmd {
+            "sh", "-c", 'umask 077 && printf "%s" "$2" > "$1"', "sh", path, text,
+        })
+    else
+        local f = io.open(path, "w")
+        if f then f:write(text); f:close() end
+    end
+end
+
+local function host_output(args)
+    local ok, out = wezterm.run_child_process(host_cmd(args))
+    return ok and out or ""
+end
+
 -- ------------------------------------------------------------ blocks -----
 
 -- Text of the most recent command output that isn't empty
@@ -307,20 +324,62 @@ local function copy(t)
     return c
 end
 
--- Called from update-status: badge with the project + tab bar tinted in its colour
-function M.project_status(window, pane)
-    local name, color = M.project(pane:get_current_working_dir())
-    local base_bg = (base_colors and base_colors.tab_bar and base_colors.tab_bar.background) or "#1f2330"
-    local want = color and blend(color, base_bg, 0.22) or base_bg
+-- ------------------------------------------------- mood lighting -----
+-- One place sets the window's colour overrides, so the pieces don't fight:
+--   * tab bar tinted in the active project's colour
+--   * a short red wash after a failed command (shell sends dot_fail)
+--   * after 22:00 and before 07:00: dimmer text and a warmer background
+--     (machine.lua: night = false turns it off, night_hours = {22, 7})
+
+local base_background -- config.background as written in config.lua (set in apply)
+
+local function is_night()
+    if machine.night == false then return false end
+    local from, to = table.unpack(machine.night_hours or { 22, 7 })
+    local h = tonumber(os.date("%H"))
+    if from > to then return h >= from or h < to end
+    return h >= from and h < to
+end
+
+local function compose(window, pane)
+    local _, color = M.project(pane:get_current_working_dir())
+    local wid = tostring(window:window_id())
+    wezterm.GLOBAL.flash = wezterm.GLOBAL.flash or {}
+    wezterm.GLOBAL.applied = wezterm.GLOBAL.applied or {}
+    local flash = (wezterm.GLOBAL.flash[wid] or 0) > os.time()
+    local night = is_night()
+    local sig = (color or "-") .. (flash and "|flash" or "") .. (night and "|night" or "")
+    if wezterm.GLOBAL.applied[wid] == sig then return end
+    wezterm.GLOBAL.applied[wid] = sig
+
     local overrides = window:get_config_overrides() or {}
-    local current = overrides.colors and overrides.colors.tab_bar and overrides.colors.tab_bar.background
-    if current ~= want and not (current == nil and want == base_bg) then
-        local colors = copy(base_colors) or {}
-        colors.tab_bar = colors.tab_bar or {}
-        colors.tab_bar.background = want
-        overrides.colors = colors
-        window:set_config_overrides(overrides)
+    local base_bg = (base_colors and base_colors.tab_bar and base_colors.tab_bar.background) or "#1f2330"
+    local colors = copy(base_colors) or {}
+    colors.tab_bar = colors.tab_bar or {}
+    colors.tab_bar.background = color and blend(color, base_bg, 0.22) or base_bg
+    overrides.colors = colors
+
+    if base_background then
+        local bg = copy(base_background)
+        if night then
+            for _, layer in ipairs(bg) do
+                if layer.hsb then layer.hsb.brightness = (layer.hsb.brightness or 1) * 0.75 end
+            end
+            table.insert(bg, { source = { Color = "#3a2414" }, width = "100%", height = "100%", opacity = 0.20 })
+        end
+        if flash then
+            table.insert(bg, { source = { Color = "#ed8796" }, width = "100%", height = "100%", opacity = 0.14 })
+        end
+        overrides.background = bg
     end
+    overrides.foreground_text_hsb = night and { hue = 1.0, saturation = 0.9, brightness = 0.85 } or nil
+    window:set_config_overrides(overrides)
+end
+
+-- Called from update-status: project badge (+ applies the overrides above)
+function M.project_status(window, pane)
+    pcall(compose, window, pane)
+    local name, color = M.project(pane:get_current_working_dir())
     if not name then return {} end
     return {
         { Background = { Color = color } },
@@ -331,19 +390,263 @@ function M.project_status(window, pane)
     }
 end
 
--- ---------------------------------------------------- user vars -----
+local function flash_failure(window)
+    local wid = tostring(window:window_id())
+    wezterm.GLOBAL.flash = wezterm.GLOBAL.flash or {}
+    wezterm.GLOBAL.flash[wid] = os.time() + 2
+    local p = window:active_pane()
+    if p then pcall(compose, window, p) end
+    wezterm.time.call_after(2.5, function()
+        local ap = window:active_pane()
+        if ap then pcall(compose, window, ap) end
+    end)
+end
 
-local function write_private_file(path, text)
-    if is_flatpak then
-        -- the sandbox sees $HOME read-only: write it on the host
-        wezterm.run_child_process(host_cmd {
-            "sh", "-c", 'umask 077 && printf "%s" "$2" > "$1"', "sh", path, text,
-        })
-    else
-        local f = io.open(path, "w")
-        if f then f:write(text); f:close() end
+-- ------------------------------------------------------- status bar -----
+-- Right side: agents (● needs you / ⟳ working), CPU and GPU temperature, RAM,
+-- running containers, CI runner. Files under /sys and /proc are read
+-- directly; anything slow (docker, nvidia-smi, gh) runs in the background
+-- (scripts/dot-status) and is read from ~/.cache/dotfiles/status.json.
+
+local function read_file(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local t = f:read("*a")
+    f:close()
+    return t
+end
+
+local hwmon -- name -> directory
+local function temp_of(names)
+    if not hwmon then
+        hwmon = {}
+        for _, n in ipairs(wezterm.glob("/sys/class/hwmon/hwmon*/name")) do
+            local name = (read_file(n) or ""):gsub("%s+", "")
+            if name ~= "" and not hwmon[name] then hwmon[name] = n:gsub("/name$", "") end
+        end
+    end
+    for _, name in ipairs(names) do
+        local dir = hwmon[name]
+        local v = dir and tonumber(read_file(dir .. "/temp1_input") or "")
+        if v then return math.floor(v / 1000 + 0.5) end
     end
 end
+
+local function ram_linux()
+    local m = read_file("/proc/meminfo")
+    if not m then return nil end
+    local total = tonumber(m:match("MemTotal:%s+(%d+)"))
+    local avail = tonumber(m:match("MemAvailable:%s+(%d+)"))
+    if not total or not avail then return nil end
+    return (total - avail) / 1048576, total / 1048576
+end
+
+local status_file = home .. "/.cache/dotfiles/status.json"
+local status_started = 0
+local function background_status()
+    local now = os.time()
+    if now - status_started >= 20 then -- refresh every 20 s, in the background
+        status_started = now
+        wezterm.background_child_process {
+            home .. "/.config/scripts/dot-status", machine.ci_repo or "ognjenmarcheta/kaine-forge",
+        }
+    end
+    local parse = (wezterm.serde and wezterm.serde.json_decode) or wezterm.json_parse
+    local ok, data = pcall(parse, read_file(status_file) or "{}")
+    return ok and type(data) == "table" and data or {}
+end
+
+local function temp_color(t)
+    if t >= 85 then return "#ed8796" elseif t >= 70 then return "#eed49f" end
+    return "#a5adcb"
+end
+
+local right_cache = { t = 0, items = {} }
+function M.right_status()
+    if os.time() - right_cache.t < 2 then return right_cache.items end
+    local items = {}
+    local function add(color, text)
+        table.insert(items, { Foreground = { Color = color } })
+        table.insert(items, { Text = text .. "  " })
+    end
+    local waiting, working = 0, 0
+    for _, a in ipairs(M.agent_list()) do
+        if a.state == "waiting" then waiting = waiting + 1 elseif a.state == "working" then working = working + 1 end
+    end
+    if waiting > 0 then add("#f5a97f", "● " .. waiting .. " waiting") end
+    if working > 0 then add("#8aadf4", "⟳ " .. working) end
+
+    local st = background_status()
+    local cpu = temp_of { "k10temp", "zenpower", "coretemp", "cpu_thermal" }
+    local gpu = temp_of { "amdgpu" } or tonumber(st.gpu_temp or "")
+    if cpu then add(temp_color(cpu), "CPU " .. cpu .. "°") end
+    if gpu then add(temp_color(gpu), "GPU " .. gpu .. "°") end
+    local used, total = ram_linux()
+    if not used and st.ram_used then used, total = tonumber(st.ram_used), tonumber(st.ram_total) end
+    if used and total then
+        add(used / total > 0.9 and "#ed8796" or "#a5adcb", string.format("RAM %.0f/%.0fG", used, total))
+    end
+    if tonumber(st.docker or "") and tonumber(st.docker) > 0 then add("#8aadf4", "🐳 " .. st.docker) end
+    if st.ci == "up" then add("#a6da95", "CI ●")
+    elseif st.ci == "down" then add("#ed8796", "CI ●") end
+    right_cache = { t = os.time(), items = items }
+    return items
+end
+
+-- ------------------------------------------------------- save points -----
+-- `dot save-game NAME` / `dot load-game NAME` (the shell asks WezTerm through a
+-- user var): tabs, splits, folders, what was running and git branches of the
+-- current workspace, kept in ~/.local/share/dotfiles/saves/NAME.json.
+-- Restoring: editors, lazygit, dev servers… start again; Claude resumes its
+-- last conversation (claude --continue); anything else is typed but not run.
+
+local saves_dir = home .. "/.local/share/dotfiles/saves"
+local json_encode = (wezterm.serde and wezterm.serde.json_encode) or wezterm.json_encode
+local json_parse = (wezterm.serde and wezterm.serde.json_decode) or wezterm.json_parse
+
+local function pane_dir(p)
+    local cwd = p:get_current_working_dir()
+    local ok, path = pcall(function() return cwd and cwd.file_path end)
+    return ok and path or nil
+end
+
+local function git_branch(dir)
+    if not dir then return "" end
+    local ok, out = wezterm.run_child_process(host_cmd { "git", "-C", dir, "branch", "--show-current" })
+    return ok and (out:gsub("%s+$", "")) or ""
+end
+
+local function save_game(window, name)
+    local ws = window:active_workspace()
+    if name == "" or name == "__workspace__" then name = ws end
+    name = name:gsub("[^%w._-]", "_")
+    local data = { name = name, workspace = ws, saved_at = os.time(), windows = {} }
+    local npanes, ntabs = 0, 0
+    for _, mw in ipairs(mux.all_windows()) do
+        if mw:get_workspace() == ws then
+            local w = { tabs = {} }
+            for _, tab in ipairs(mw:tabs()) do
+                ntabs = ntabs + 1
+                local t = { title = tab:get_title(), panes = {} }
+                for _, info in ipairs(tab:panes_with_info()) do
+                    npanes = npanes + 1
+                    local dir = pane_dir(info.pane)
+                    local vars = info.pane:get_user_vars()
+                    table.insert(t.panes, {
+                        left = info.left, top = info.top, width = info.width, height = info.height,
+                        active = info.is_active, cwd = dir, prog = vars.dot_prog or "", branch = git_branch(dir),
+                    })
+                end
+                table.insert(w.tabs, t)
+            end
+            table.insert(data.windows, w)
+        end
+    end
+    host_output { "mkdir", "-p", saves_dir }
+    write_private_file(saves_dir .. "/" .. name .. ".json", json_encode(data))
+    toast(window, "💾 Saved \"" .. name .. "\"", ntabs .. " tab(s), " .. npanes .. " pane(s) — dot load-game " .. name)
+end
+
+local restart_patterns = {
+    "^n?vim", "^lazygit", "^yazi", "^y$", "^btop", "^htop", "^k9s", "^lazydocker", "^tig",
+    "^npm run", "^npm start", "^pnpm ", "^yarn ", "^bun run", "^bun dev", "^deno task",
+    "^docker compose up", "^docker%-compose up", "^just", "^mise run", "^make ", "^cargo watch", "^cargo run",
+    "^npx ", "^uv run", "^python3? manage%.py runserver", "^go run", "^tail %-f",
+}
+
+local function restore_command(prog)
+    if not prog or prog == "" then return nil end
+    if prog:match("^claude") then return "claude --continue", true end
+    for _, pat in ipairs(restart_patterns) do
+        if prog:match(pat) then return prog, true end
+    end
+    return prog, false -- typed, not run: you decide
+end
+
+local function start_in(p, cwd, prog)
+    local cmd = cwd and (" cd -- " .. shell_quote(cwd) .. " && clear") or " clear"
+    p:send_text(cmd .. "\n")
+    local again, run = restore_command(prog)
+    if again then p:send_text(again .. (run and "\n" or "")) end
+end
+
+local function load_game(window, pane, name)
+    name = name:gsub("[^%w._-]", "_")
+    local text = read_file(saves_dir .. "/" .. name .. ".json")
+    if not text then
+        toast(window, "No save called \"" .. name .. "\"", "dot games lists them")
+        return
+    end
+    local ok, data = pcall(json_parse, text)
+    if not ok or type(data) ~= "table" then
+        toast(window, "Save \"" .. name .. "\" is unreadable")
+        return
+    end
+    local target = data.name or name
+    for _, ws in ipairs(mux.get_workspace_names()) do
+        if ws == target then target = target .. "-restored" end
+    end
+    local domain = { DomainName = pane:get_domain_name() }
+    local moved = {}
+    for _, w in ipairs(data.windows or {}) do
+        local mwin
+        for ti, t in ipairs(w.tabs or {}) do
+            local ps = t.panes or {}
+            table.sort(ps, function(a, b)
+                if a.left ~= b.left then return a.left < b.left end
+                return a.top < b.top
+            end)
+            local first = ps[1] or {}
+            local tab, p
+            if ti == 1 then
+                tab, p, mwin = mux.spawn_window { workspace = target, cwd = first.cwd, domain = domain }
+            else
+                tab, p = mwin:spawn_tab { cwd = first.cwd, domain = domain }
+            end
+            if t.title and t.title ~= "" then tab:set_title(t.title) end
+            local made = { { pane = p, info = first } }
+            start_in(p, first.cwd, first.prog)
+            for i = 2, #ps do
+                local info = ps[i]
+                -- split the closest pane above / to the left of this one
+                local from
+                for _, m in ipairs(made) do
+                    if m.info.left <= info.left and m.info.top <= info.top then
+                        if not from or (m.info.left + m.info.top) > (from.info.left + from.info.top) then from = m end
+                    end
+                end
+                from = from or made[1]
+                local right = math.abs(info.top - from.info.top) <= 1 and info.left > from.info.left
+                local size
+                if right then
+                    size = info.width / math.max(1, info.left + info.width - from.info.left)
+                else
+                    size = info.height / math.max(1, info.top + info.height - from.info.top)
+                end
+                local np = from.pane:split {
+                    direction = right and "Right" or "Bottom",
+                    size = math.min(0.9, math.max(0.1, size)),
+                    cwd = info.cwd,
+                    domain = domain,
+                }
+                table.insert(made, { pane = np, info = info })
+                start_in(np, info.cwd, info.prog)
+            end
+            for _, m in ipairs(made) do
+                local now_branch = git_branch(m.info.cwd)
+                if m.info.branch ~= "" and now_branch ~= "" and now_branch ~= m.info.branch then
+                    table.insert(moved, basename(m.info.cwd) .. ": " .. m.info.branch .. " → now " .. now_branch)
+                end
+            end
+        end
+    end
+    window:perform_action(act.SwitchToWorkspace { name = target }, pane)
+    toast(window, "▶ Loaded \"" .. name .. "\"",
+        #moved > 0 and ("Branch changed since the save: " .. table.concat(moved, ", ")) or "Everything is where you left it", 8000)
+end
+
+-- ---------------------------------------------------- user vars -----
+
 
 wezterm.on("user-var-changed", function(window, pane, name, value)
     if name == "dot_agent" then
@@ -368,6 +671,12 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
         local title = (state == "waiting" and "● Claude needs you" or "✓ Claude finished")
             .. (project ~= "" and (" · " .. project) or "")
         toast(window, title, msg, 6000)
+    elseif name == "dot_fail" then
+        flash_failure(window)
+    elseif name == "dot_save" then
+        save_game(window, value)
+    elseif name == "dot_load" then
+        load_game(window, pane, value)
     elseif name == "dot_ai_ctx" then
         -- `ai fix` asks for the visible screen; only ever write our own cache files
         local path = value
@@ -465,10 +774,6 @@ local function zone_text(pane, kind)
     end
 end
 
-local function host_output(args)
-    local ok, out = wezterm.run_child_process(host_cmd(args))
-    return ok and out or ""
-end
 
 -- Leader ?: Claude in a side pane, told about the folder, git state and the
 -- last command + its output. Your subscription only (API keys removed, and
@@ -557,6 +862,32 @@ wezterm.on("augment-command-palette", function(window, pane)
         { brief = "Agents: who needs me?  (Leader a)", icon = "md_robot", action = agent_radar },
         { brief = "Ask Claude about this pane  (Leader ?)", icon = "md_chat_question", action = pair_pane },
         {
+            brief = "Save game: keep this workspace (tabs, splits, programs)",
+            icon = "md_content_save",
+            action = act.PromptInputLine {
+                description = "Name for this save (empty = workspace name)",
+                action = wezterm.action_callback(function(win, _, line)
+                    if line then save_game(win, line) end
+                end),
+            },
+        },
+        {
+            brief = "Load game…",
+            icon = "md_folder_play",
+            action = wezterm.action_callback(function(win, p)
+                local choices = {}
+                for _, f in ipairs(wezterm.glob(saves_dir .. "/*.json")) do
+                    local n = f:match("([^/]+)%.json$")
+                    table.insert(choices, { id = n, label = n })
+                end
+                if #choices == 0 then toast(win, "No saves yet", "Palette → Save game, or dot save-game NAME") return end
+                win:perform_action(act.InputSelector {
+                    title = "Load a save", fuzzy = true, choices = choices,
+                    action = wezterm.action_callback(function(w2, p2, id) if id then load_game(w2, p2, id) end end),
+                }, p)
+            end),
+        },
+        {
             brief = "Standup (yesterday / today / blockers)",
             icon = "md_account_voice",
             action = wezterm.action_callback(function(win, p) run_in_new_tab(win, p, "standup", "dot standup") end),
@@ -612,6 +943,7 @@ end)
 
 function M.apply(config)
     base_colors = copy(config.colors)
+    base_background = copy(config.background)
 
     -- Linux: run through XWayland, like the Flatpak build did. WezTerm
     -- 20240203 on native GNOME Wayland can't drag the window by its tab bar

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# dot-status [OWNER/REPO] — numbers for the WezTerm status bar that are too slow
+# to read on every redraw. WezTerm runs this in the background every ~20 s and
+# reads ~/.cache/dotfiles/status.json. CI runner state is checked every 5 min
+# from the repo's CI_SELF_HOSTED_LINUX / CI_RUNNER_HEARTBEAT variables.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"   # GUI apps get a short PATH
+ci_repo="${1:-ognjenmarcheta/kaine-forge}"
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles"
+mkdir -p "$dir"
+lock="$dir/status.lock"
+# one at a time
+if ! mkdir "$lock" 2>/dev/null; then
+    [ -n "$(find "$lock" -mmin +2 2>/dev/null)" ] || exit 0
+fi
+trap 'rmdir "$lock" 2>/dev/null' EXIT
+
+to() { if command -v timeout >/dev/null; then timeout "$@"; elif command -v gtimeout >/dev/null; then gtimeout "$@"; else shift; "$@"; fi; }
+
+docker_n=""
+if command -v docker >/dev/null 2>&1; then
+    docker_n=$(to 3 docker ps -q 2>/dev/null | wc -l | tr -d ' ') || docker_n=""
+fi
+
+gpu=""
+if command -v nvidia-smi >/dev/null 2>&1; then
+    gpu=$(to 3 nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d ' ')
+fi
+
+ram_used="" ram_total=""
+if [ "$(uname -s)" = Darwin ]; then
+    total=$(sysctl -n hw.memsize 2>/dev/null)
+    page=$(sysctl -n hw.pagesize 2>/dev/null)
+    pages=$(vm_stat 2>/dev/null | awk '/Pages (active|wired down|occupied by compressor)/ {gsub("\\.","",$NF); s+=$NF} END {print s+0}')
+    if [ -n "$total" ] && [ -n "$page" ]; then
+        ram_total=$(awk -v t="$total" 'BEGIN {printf "%.1f", t/1073741824}')
+        ram_used=$(awk -v p="$pages" -v s="$page" 'BEGIN {printf "%.1f", p*s/1073741824}')
+    fi
+fi
+
+# CI runner: "up" when routing is on and the heartbeat is recent
+ci_file="$dir/ci-runner"
+if [ -z "$(find "$ci_file" -mmin -5 2>/dev/null)" ] && command -v gh >/dev/null 2>&1; then
+    on=$(to 10 gh api "repos/$ci_repo/actions/variables/CI_SELF_HOSTED_LINUX" --jq .value 2>/dev/null) || on=""
+    beat=$(to 10 gh api "repos/$ci_repo/actions/variables/CI_RUNNER_HEARTBEAT" --jq .value 2>/dev/null) || beat=""
+    case "$on" in true|false) ;; *) on="" ;; esac
+    case "$beat" in ''|*[!0-9]*) beat="" ;; esac
+    state=""
+    if [ -n "$on" ]; then
+        if [ "$on" = true ] && [ -n "$beat" ] && [ $(( $(date +%s) - beat )) -lt 2400 ]; then state=up; else state=down; fi
+    fi
+    printf '%s' "$state" > "$ci_file"
+fi
+ci=$(cat "$ci_file" 2>/dev/null)
+
+tmp="$dir/status.json.tmp"
+jq -n --arg docker "$docker_n" --arg gpu "$gpu" --arg ci "$ci" \
+    --arg ram_used "$ram_used" --arg ram_total "$ram_total" \
+    '{docker: $docker, gpu_temp: $gpu, ci: $ci, ram_used: $ram_used, ram_total: $ram_total}' > "$tmp" \
+    && mv "$tmp" "$dir/status.json"

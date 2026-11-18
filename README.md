@@ -4,6 +4,10 @@ Terminal setup for macOS and Linux (Ubuntu): WezTerm, Starship prompt, Neovim
 (EcoVim v5), zoxide, fzf, atuin, eza, bat, delta, mise, yazi, lazygit, btop,
 herdr scripts, OpenCode / agent skills, and the `ai` command.
 
+Every AI feature runs through `config/scripts/dot-ai`: Claude Code on **your
+Claude subscription login only** — API-key variables are removed and it refuses
+to run if Claude Code reports any other login (`dot-ai --check`).
+
 Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned),
 `dot save "msg"` (commit + push your config edits), `dot doctor`, `dot keys`.
 
@@ -49,7 +53,7 @@ Running it again is safe: anything it replaces goes to `~/.dotfiles-backup/<time
 | `config/shell/aliases.sh` | sourced from `~/.bashrc` / `~/.zshrc` |
 | `config/shell/local.sh`   | per-machine extras, sourced last (not committed) |
 | `config/git/local`        | git identity / per-machine git (not committed)   |
-| `config/wezterm/machine.lua` | per-machine WezTerm settings (not committed)  |
+| `config/wezterm/machine.lua` | per-machine WezTerm settings (not committed): `persistent_sessions`, `wayland`, `project_colors`, `night`, `night_hours`, `ci_repo` |
 
 Because configs are symlinks, editing `~/.config/wezterm/config.lua` edits this
 repo — commit and push to keep machines in sync.
@@ -93,6 +97,29 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 - **History sync**: `dot sync-history` sets up atuin's end-to-end encrypted
   sync between Mac and Linux; the key goes into Bitwarden (`bw` CLI) so the
   next machine logs in without copying it by hand.
+- **Standups and client updates**: `dot standup` and `dot update CLIENT` read
+  your commits, branches, PRs + CI (gh), what you ran and roughly how long
+  (atuin) and your `dot note`s, per repo, and Claude writes the text (copied +
+  saved; `--edit`, `--hours`, `--lang sr`, `--since "nov 1"`, `--context` to see
+  the raw log). Which repo belongs to which client:
+  `~/.config/dotfiles/clients.toml` (`dot clients --init`; not committed).
+  Repos of no client are internal: in standups, never in client updates.
+- **Agents**: Leader a lists every Claude Code session (needs you / working /
+  done, for how long, what about) and jumps there; Leader ? opens Claude in a
+  side pane already told about the folder, git state and the last output.
+- **Self-healing typos**: after a failed command with an obvious mistake, a 💡
+  fix shows under the zsh prompt; F1 puts it on the command line (never runs
+  it). `DOT_FIX=0` turns it off.
+- **Push-to-talk**: Alt+V, speak, any key → `ai "…"` on the command line.
+  Speech-to-text is whisper.cpp on this machine; no audio leaves it.
+- **Project lobby**: cd into a repo after 3+ days away → card with branch, your
+  PRs, reviews waiting, CI, your last commands, and what others pushed.
+- **Mood lighting and status bar**: red flash when a command fails, warmer and
+  dimmer after 22:00; right side shows agents waiting, CPU/GPU °C, RAM,
+  containers and whether the CI runner is up.
+- **Save points**: `dot save-game NAME` / `dot load-game NAME` (or the palette)
+  keep a workspace's tabs, splits, folders, running programs and branches
+  across reboots; Claude panes resume with `claude --continue`.
 - **Prompt**: Starship with clickable user / path segments / git branch; `↑` = `cd ..`.
 - **Shell**: `ls`/`ll` via eza (icons, git status, clickable), `cat`/`man` via bat,
   `z` + Tab menu of frequent folders, Ctrl+R = atuin history, Ctrl+T / Alt+C =

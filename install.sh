@@ -25,6 +25,8 @@ OS="${DOTFILES_OS:-$(uname -s)}"   # DOTFILES_OS: override for testing only
 ARCH="$(uname -m)"
 NVIM_VERSION="0.11.6"              # the Neovim this config is tested with
 BASH_PREEXEC_VERSION="0.7.0"
+WHISPER_VERSION="v1.9.5"           # push-to-talk speech-to-text (whisper.cpp, local)
+WHISPER_MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
 ZSH_PLUGINS="zsh-users/zsh-autosuggestions@v0.7.1 zsh-users/zsh-syntax-highlighting@0.8.0 Aloxaf/fzf-tab@v1.3.0"
 LINKS_ONLY=0
 NVIM_PLUGINS=1
@@ -378,6 +380,48 @@ install_zsh_plugins() {
     done
 }
 
+install_whisper() {
+    # Push-to-talk (Alt+V): speech -> text on this machine; nothing is uploaded
+    step "Push-to-talk: whisper.cpp $WHISPER_VERSION + speech model (local)"
+    if [ "$OS" = Darwin ]; then
+        if have whisper-cli; then ok "whisper-cli (Homebrew)"; else warn "whisper-cpp missing — brew bundle"; fi
+    else
+        local src="$OPT/whisper.cpp" stamp="$OPT/whisper.cpp.version"
+        if have whisper-cli && [ "$(cat "$stamp" 2>/dev/null)" = "$WHISPER_VERSION" ]; then
+            ok "whisper-cli $WHISPER_VERSION"
+        else
+            have cmake || apt_install cmake
+            [ "$IN_CI" -eq 1 ] || apt_install pipewire-bin      # pw-record (microphone)
+            rm -rf "$src"
+            mkdir -p "$OPT"
+            if git clone -q --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp.git "$src" 2>/dev/null \
+                && cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+                    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF >/dev/null \
+                && cmake --build "$src/build" -j "$(nproc 2>/dev/null || echo 4)" --target whisper-cli >/dev/null \
+                && install -m 755 "$src/build/bin/whisper-cli" "$BIN/whisper-cli"; then
+                echo "$WHISPER_VERSION" > "$stamp"
+                hash -r; ok "whisper-cli $WHISPER_VERSION built"
+            else
+                warn "whisper.cpp build failed — push-to-talk won't work (re-run install.sh)"
+            fi
+        fi
+    fi
+    local model="$HOME/.local/share/whisper/ggml-base.bin"
+    if [ -s "$model" ]; then
+        ok "speech model $(tilde "$model")"
+    elif [ "$IN_CI" -eq 1 ]; then
+        ok "speech model download skipped in CI"
+    else
+        mkdir -p "$(dirname "$model")"
+        echo "  downloading the speech model (~148 MB, once)…"
+        if curl -fL --progress-bar -o "$model.part" "$WHISPER_MODEL_URL" && mv "$model.part" "$model"; then
+            ok "speech model $(tilde "$model")"
+        else
+            rm -f "$model.part"; warn "speech model download failed — re-run install.sh"
+        fi
+    fi
+}
+
 login_shell() {
     if [ "$OS" = Darwin ]; then
         dscl . -read "$HOME" UserShell 2>/dev/null | awk '{print $2}'
@@ -504,6 +548,7 @@ main() {
         install_neovim
         install_bash_preexec
         install_zsh_plugins
+        install_whisper
         install_claude_code
         setup_tools
         setup_claude_hooks
