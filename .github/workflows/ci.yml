@@ -1,0 +1,63 @@
+# Lint + a full fresh-machine install on Linux, then doctor + Neovim smoke test.
+# Runs on the self-hosted runner on the workstation (kaine-ci-linux, same as
+# kaine-forge / ordina-forge) while its heartbeat says it's up, otherwise on
+# GitHub's ubuntu-latest. See kaine-forge docs/self-hosted-ci.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1" # weekly: catches upstream releases that break the install
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ${{ fromJSON(github.event.repository.visibility == 'private' && vars.CI_SELF_HOSTED_LINUX == 'true' && fromJSON(vars.CI_SELF_HOSTED_LINUX) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","linux","x64","kaine-ci-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck zsh lua5.4 python3-yaml >/dev/null
+      - run: bash tests/lint.sh
+
+  linux-install:
+    needs: lint
+    runs-on: ${{ fromJSON(github.event.repository.visibility == 'private' && vars.CI_SELF_HOSTED_LINUX == 'true' && fromJSON(vars.CI_SELF_HOSTED_LINUX) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","linux","x64","kaine-ci-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 45
+    env:
+      GITHUB_TOKEN: ${{ github.token }} # release lookups without the 60/h API limit
+      NVIM_SMOKE_WAIT_MS: "20000"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh home folder (like a new machine)
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/home/.config" >> "$GITHUB_ENV"   # runners preset it to the real home
+      - name: install.sh
+        timeout-minutes: 20
+        run: ./install.sh
+      - name: Doctor + Neovim smoke test
+        timeout-minutes: 5
+        run: bash tests/doctor.sh --nvim
+      - name: Re-running install.sh changes nothing
+        timeout-minutes: 10
+        run: |
+          ./install.sh --no-nvim
+          if [ -d "$HOME/.dotfiles-backup" ]; then
+            echo "::error::second run moved configs to a backup:"; ls -R "$HOME/.dotfiles-backup"; exit 1
+          fi
+      - name: --upgrade works
+        timeout-minutes: 15
+        run: ./install.sh --upgrade --no-nvim

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# dot — manage the dotfiles repo from anywhere.
+#
+#   dot status          what changed in the repo (configs are links, so edits show up here)
+#   dot save "message"  commit everything and push
+#   dot update          pull, re-link, upgrade tools (Neovim plugins stay pinned)
+#   dot doctor [--nvim] check this machine matches the dotfiles
+#   dot edit            open the repo in your editor
+#   dot keys            cheat sheet of the shortcuts this setup adds
+#   cd "$(dot dir)"     go to the repo
+set -euo pipefail
+
+find_repo() {
+    if [ -n "${DOTFILES_DIR:-}" ]; then printf '%s' "$DOTFILES_DIR"; return; fi
+    local link
+    link=$(readlink "$HOME/.config/shell" 2>/dev/null || true)   # …/dotfiles/config/shell
+    if [ -n "$link" ]; then printf '%s' "${link%/config/shell}"; return; fi
+    printf '%s' "$HOME/Github/dotfiles"
+}
+DOT="$(find_repo)"
+[ -d "$DOT/.git" ] || { echo "dot: no dotfiles repo at $DOT (set DOTFILES_DIR)" >&2; exit 1; }
+
+keys() {
+    cat <<'EOF'
+WezTerm  (leader = Alt+q, then the key)
+  Leader c / x        new tab / close pane         Leader | / -   split right / down
+  Leader b / n        previous / next tab          Leader 0-9     go to tab
+  Leader w / W        pick workspace / new one     Leader arrows  resize pane
+  Ctrl+h/j/k/l        move between panes AND Neovim splits (falls through to the
+                      shell when there's no pane that way, so Ctrl+L still clears)
+  Alt+h/j/k/l         resize panes / Neovim splits
+  Ctrl+click          open a link inside nvim / lazygit / btop
+
+Shell
+  z <name> / z <Tab>  jump to a frequent folder / pick from a menu
+  y                   yazi file manager (cd's to where you quit)
+  Ctrl+R              atuin history search        Ctrl+T  insert a file   Alt+C  cd into a folder
+  rgf <text>          search file contents, open the hit in nvim
+  ll / lt             list with git status / tree   (entries are clickable)
+  ai <request>        shell command from Claude    ai explain <cmd>   ai fix
+  dot …               this tool
+
+Prompt
+  click ↑ = cd ..   click a path segment = open folder   click branch = GitHub
+
+Neovim
+  Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
+  :PluginsRestore     put plugins back on the tested versions
+EOF
+}
+
+case "${1:-help}" in
+    status|st)
+        git -C "$DOT" status -sb
+        ;;
+    save)
+        shift
+        msg="${*:-Update dotfiles}"
+        git -C "$DOT" add -A
+        if git -C "$DOT" diff --cached --quiet; then echo "dot: nothing to save"; exit 0; fi
+        git -C "$DOT" commit -m "$msg"
+        git -C "$DOT" push
+        ;;
+    update|up)
+        git -C "$DOT" pull --ff-only
+        "$DOT/install.sh" --upgrade
+        ;;
+    doctor|check)
+        shift
+        exec "$DOT/tests/doctor.sh" "$@"
+        ;;
+    edit)
+        cd "$DOT" && exec "${EDITOR:-nvim}" .
+        ;;
+    dir)
+        printf '%s\n' "$DOT"
+        ;;
+    keys)
+        keys
+        ;;
+    help|-h|--help|*)
+        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+esac
