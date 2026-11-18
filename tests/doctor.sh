@@ -59,7 +59,11 @@ case "$nv" in
     *) bad "Neovim must be 0.11.x for the pinned plugins, found: ${nv:-none}" ;;
 esac
 if [ -f "$HOME/.local/share/bash-preexec/bash-preexec.sh" ]; then ok "bash-preexec"; else bad "bash-preexec missing (atuin + notifications in bash)"; fi
+for t in tldr navi carapace just fx xh jq; do
+    if have "$t"; then ok "$t"; else bad "$t missing"; fi
+done
 have claude || warn "claude (Claude Code) not installed — \`ai\` won't work"
+if grep -q agent-notify "$HOME/.claude/settings.json" 2>/dev/null; then ok "Claude Code alert hooks"; else warn "Claude Code alert hooks not set up (run install.sh)"; fi
 
 head_ "git"
 if [ "$(git config --get core.pager)" = delta ]; then ok "git uses delta"; else bad "git config not picked up (core.pager)"; fi
@@ -83,7 +87,7 @@ if TERM=xterm-256color bash -ic '
 else
     bad "prompt has no clickable links"
 fi
-for f in z y ai rgf; do
+for f in z y ai rgf _dot_marks_precmd; do
     if TERM=xterm-256color bash -ic "type $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in bash"; fi
 done
 
@@ -96,7 +100,7 @@ if have zsh; then
     else
         bad "prompt has no clickable links"
     fi
-    for f in z y ai rgf; do
+    for f in z y ai rgf _dot_marks_precmd; do
         if TERM=xterm-256color zsh -ic "whence -w $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in zsh"; fi
     done
 fi

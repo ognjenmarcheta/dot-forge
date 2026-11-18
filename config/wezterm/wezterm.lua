@@ -1,6 +1,7 @@
 local wezterm = require("wezterm")
 local config = require("config")
 require("events")
+require("features").apply(config) -- blocks, quick select, projects, palette, agent alerts
 
 -- Apply color scheme based on the WEZTERM_THEME environment variable
 local themes = {

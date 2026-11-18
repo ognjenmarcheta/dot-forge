@@ -1,0 +1,32 @@
+% android, adb
+
+# List connected devices
+adb devices -l
+
+# Install (or reinstall) an APK on a device
+adb -s <device> install -r <apk>
+
+# Uninstall an app
+adb -s <device> uninstall <package>
+
+# Live logs for one app
+adb -s <device> logcat --pid=$(adb -s <device> shell pidof -s <package>)
+
+# Screenshot to the current folder
+adb -s <device> exec-out screencap -p > screen-$(date +%s).png
+
+# Record the screen (Ctrl+C to stop), then pull it
+adb -s <device> shell screenrecord /sdcard/rec.mp4; adb -s <device> pull /sdcard/rec.mp4
+
+# Forward a device port to this machine (e.g. Metro / dev server)
+adb -s <device> reverse tcp:<port> tcp:<port>
+
+# Connect over Wi-Fi (device on the same network)
+adb tcpip 5555 && adb connect <ip>:5555
+
+# Open a deep link on the device
+adb -s <device> shell am start -a android.intent.action.VIEW -d "<url>"
+
+$ device: adb devices | tail -n +2 | grep -v '^$' --- --column 1
+$ apk: fd -e apk
+$ package: adb -s <device> shell pm list packages -3 | sed 's/^package://'
