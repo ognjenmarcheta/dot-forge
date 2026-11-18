@@ -1,0 +1,13 @@
+# Global tool versions (mise). Projects override with mise.toml, .nvmrc,
+# .node-version or .python-version. `mise use -g node@22` changes these.
+
+[tools]
+node = "lts"
+pnpm = "latest"
+uv = "latest"
+
+[settings]
+# also honour nvm/pyenv-style version files in existing projects
+idiomatic_version_file_enable_tools = ["node", "python"]
+# don't nag in every new terminal about tools that aren't installed yet
+status.missing_tools = "never"

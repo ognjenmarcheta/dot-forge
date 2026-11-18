@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Check that this machine matches the dotfiles (also what CI runs).
+#   tests/doctor.sh          links, tools, shells, prompt, git config
+#   tests/doctor.sh --nvim   + start Neovim headless and fail on errors
+# Works with macOS's bash 3.2.
+
+set -uo pipefail
+
+DOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+OS="$(uname -s)"
+RUN_NVIM=0
+[ "${1:-}" = "--nvim" ] && RUN_NVIM=1
+
+fails=0
+warns=0
+c_ok=$'\033[1;32m'; c_bad=$'\033[1;31m'; c_warn=$'\033[1;33m'; c_h=$'\033[1;34m'; c_off=$'\033[0m'
+ok()   { printf '  %s✓%s %s\n' "$c_ok" "$c_off" "$*"; }
+bad()  { printf '  %s✗%s %s\n' "$c_bad" "$c_off" "$*"; fails=$((fails + 1)); }
+warn() { printf '  %s!%s %s\n' "$c_warn" "$c_off" "$*"; warns=$((warns + 1)); }
+head_() { printf '\n%s%s%s\n' "$c_h" "$*" "$c_off"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Tools may live in ~/.local/bin (Linux) — make sure we see what the shell sees.
+export PATH="$HOME/.local/bin:$PATH"
+[ -x /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)" && export PATH="$HOME/.local/bin:$PATH"
+
+head_ "Config links (~/.config -> repo)"
+for item in "$DOT"/config/*; do
+    name="$(basename "$item")"
+    if [ -L "$CONFIG_HOME/$name" ] && [ "$(readlink "$CONFIG_HOME/$name")" = "$item" ]; then
+        ok "$name"
+    else
+        bad "$name is not linked to the repo (run install.sh)"
+    fi
+done
+if [ "$OS" = Darwin ]; then
+    for item in "$DOT"/macos/*; do
+        name="$(basename "$item")"
+        if [ "$(readlink "$CONFIG_HOME/$name" 2>/dev/null)" = "$item" ]; then ok "$name (macOS)"; else bad "$name (macOS) not linked"; fi
+    done
+fi
+
+head_ "Shell hook"
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ "$rc" = "$HOME/.zshrc" ] && ! have zsh && continue
+    if grep -qF '.config/shell/aliases.sh' "$rc" 2>/dev/null; then ok "$(basename "$rc")"; else bad "$(basename "$rc") doesn't load ~/.config/shell/aliases.sh"; fi
+done
+
+head_ "Tools"
+for t in git starship zoxide fzf yazi atuin mise eza delta rg lazygit opencode nvim; do
+    if have "$t"; then ok "$t"; else bad "$t missing"; fi
+done
+if have bat || have batcat; then ok "bat"; else bad "bat missing"; fi
+if have fd || have fdfind; then ok "fd"; else bad "fd missing"; fi
+nv="$(nvim --version 2>/dev/null | sed -n 1p)"
+case "$nv" in
+    "NVIM v0.11."*) ok "$nv (pinned)" ;;
+    *) bad "Neovim must be 0.11.x for the pinned plugins, found: ${nv:-none}" ;;
+esac
+if [ -f "$HOME/.local/share/bash-preexec/bash-preexec.sh" ]; then ok "bash-preexec"; else bad "bash-preexec missing (atuin + notifications in bash)"; fi
+have claude || warn "claude (Claude Code) not installed — \`ai\` won't work"
+
+head_ "git"
+if [ "$(git config --get core.pager)" = delta ]; then ok "git uses delta"; else bad "git config not picked up (core.pager)"; fi
+if git config --get user.email >/dev/null; then ok "identity: $(git config --get user.name) <$(git config --get user.email)>"; else warn "no git identity — put it in ~/.config/git/local"; fi
+
+# Run an interactive shell, collect stderr minus job-control noise (no tty in CI).
+shell_check() { # shell  script
+    local sh="$1" script="$2" err
+    err=$(TERM=xterm-256color "$sh" -ic "$script" 2>&1 >/dev/null </dev/null \
+        | grep -vE 'job control|cannot set terminal process group|Inappropriate ioctl|no job control' || true)
+    printf '%s' "$err"
+}
+
+head_ "bash"
+err=$(shell_check bash 'true')
+if [ -z "$err" ]; then ok "starts without errors"; else bad "errors on start:"; printf '%s\n' "$err" | sed 's/^/      /' | head -10; fi
+if TERM=xterm-256color bash -ic '
+    if [ -n "${precmd_functions+x}" ]; then for f in "${precmd_functions[@]}"; do $f; done; else eval "$PROMPT_COMMAND"; fi
+    [[ "$PS1" == *"x-cd://parent"* || "$PWD" == / ]]' </dev/null >/dev/null 2>&1; then
+    ok "clickable prompt renders"
+else
+    bad "prompt has no clickable links"
+fi
+for f in z y ai rgf; do
+    if TERM=xterm-256color bash -ic "type $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in bash"; fi
+done
+
+if have zsh; then
+    head_ "zsh"
+    err=$(shell_check zsh 'true')
+    if [ -z "$err" ]; then ok "starts without errors"; else bad "errors on start:"; printf '%s\n' "$err" | sed 's/^/      /' | head -10; fi
+    if TERM=xterm-256color zsh -ic 'for f in $precmd_functions; do $f; done; [[ "$(_cp_render left)" == *x-cd://parent* || "$PWD" == / ]]' </dev/null >/dev/null 2>&1; then
+        ok "clickable prompt renders"
+    else
+        bad "prompt has no clickable links"
+    fi
+    for f in z y ai rgf; do
+        if TERM=xterm-256color zsh -ic "whence -w $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in zsh"; fi
+    done
+fi
+
+if [ "$RUN_NVIM" -eq 1 ]; then
+    head_ "Neovim (headless start)"
+    out=$(cd "$(mktemp -d)" && nvim --headless --cmd "luafile $DOT/tests/nvim-smoke.lua" 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | sed 's/^/      /'
+    if [ $rc -eq 0 ]; then ok "Neovim starts cleanly"; else bad "Neovim smoke test failed (exit $rc)"; fi
+fi
+
+printf '\n'
+if [ $fails -eq 0 ]; then
+    printf '%sAll good%s (%d warnings)\n' "$c_ok" "$c_off" "$warns"
+else
+    printf '%s%d problem(s)%s, %d warning(s)\n' "$c_bad" "$fails" "$c_off" "$warns"
+fi
+[ $fails -eq 0 ]

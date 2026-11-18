@@ -4,7 +4,9 @@
 #   ai create 10 folders named project-1 … project-10
 #   ai find android devices via adb
 #   ai show what is using port 3000
-#   ai -h                       help
+#   ai explain tar -xzvf x.tgz -C /opt   explain a command (nothing runs)
+#   ai fix                               fix the command that just failed
+#   ai -h                                help
 #
 # Claude only *suggests* the command (all of Claude Code's tools are disabled),
 # you see it first and choose: Enter = run, e = edit, c = copy, n = cancel.
@@ -54,6 +56,12 @@ Use tools that are normally installed on this OS; if a tool may be missing, add 
 with the install command instead of guessing. Never invent file names: use the directory
 listing provided.'
 
+_ai_explain_prompt='You explain shell commands inside the user'"'"'s terminal.
+Explain the given command for the given OS and shell: what it does overall, then each
+part (flags, pipes, redirections) in short plain lines. Point out anything risky
+(deleting data, sudo, overwriting files, network access) on a line starting with
+"WARNING: ". Plain text, no markdown headings, no code fences, at most ~15 lines.'
+
 _ai_help() {
     cat <<'EOF'
 ai — describe what you want, get a shell command (via Claude Code)
@@ -66,6 +74,8 @@ Examples:
   ai list the 10 biggest files in this folder
   ai kill whatever is listening on port 5173
   ai convert all .mov files here to mp4
+  ai explain find . -name '*.log' -mtime +7 -delete
+  ai fix                      (right after a command failed)
 
 After the suggestion:  Enter = run   e = edit   c = copy   n = cancel
 Model: AI_MODEL=haiku|sonnet|opus (default: sonnet)
@@ -73,7 +83,29 @@ EOF
 }
 
 ai() {
+    local last_status=$?            # first: exit status of the previous command
     if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then _ai_help; return 0; fi
+
+    local mode=command system_prompt="$_ai_system_prompt"
+    case "$1" in
+        explain)
+            shift
+            [ $# -gt 0 ] || { echo "usage: ai explain <command>"; return 1; }
+            mode=explain
+            system_prompt="$_ai_explain_prompt"
+            set -- "Explain this command: $*"
+            ;;
+        fix)
+            shift
+            local prev
+            # history: -1 is this `ai fix`, -2 is the command before it
+            prev=$(fc -ln -2 -2 2>/dev/null | sed 's/^[[:space:]]*//')
+            if [ -z "$prev" ]; then echo "ai fix: no previous command in history"; return 1; fi
+            printf '\033[2mfixing: %s (exit %s)\033[0m\n' "$prev" "$last_status"
+            set -- "This command just failed with exit status $last_status: $prev
+Give a corrected command that does what it was meant to do. ${*:+Extra info from the user: $*}"
+            ;;
+    esac
 
     local claude_bin
     if ! claude_bin=$(_ai_claude_bin); then
@@ -92,7 +124,7 @@ ai() {
             --tools "" \
             --no-session-persistence \
             --output-format text \
-            --system-prompt "$_ai_system_prompt" 2>&1
+            --system-prompt "$system_prompt" 2>&1
     )
     rc=$?
     printf '\033[2K'
@@ -106,6 +138,16 @@ ai() {
 
     # strip code fences if the model added them anyway
     reply=$(printf '%s\n' "$reply" | sed -e '/^```/d')
+
+    if [ "$mode" = explain ]; then
+        printf '%s\n' "$reply" | while IFS= read -r line; do
+            case "$line" in
+                WARNING*|"# WARNING"*) printf '\033[1;31m%s\033[0m\n' "$line" ;;
+                *) printf '%s\n' "$line" ;;
+            esac
+        done
+        return 0
+    fi
 
     local notes cmd
     notes=$(printf '%s\n' "$reply" | grep '^#' || true)

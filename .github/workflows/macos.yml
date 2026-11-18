@@ -1,0 +1,40 @@
+# Full install on macOS with the stock /bin/bash 3.2. Runs on a self-hosted Mac
+# when CI_SELF_HOSTED_MACOS is true, otherwise on GitHub's macos-latest — whose
+# minutes count 10x on private repos, so this only runs when the installer
+# changes, monthly, or by hand (Actions → macOS → Run workflow).
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths: [install.sh, Brewfile, tests/**, config/shell/**, .github/workflows/macos.yml]
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 3 * *"
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos-install:
+    runs-on: ${{ fromJSON(vars.CI_SELF_HOSTED_MACOS == 'true' && '["self-hosted","macOS","kaine-ci-macos"]' || '["macos-latest"]') }}
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      NVIM_SMOKE_WAIT_MS: "20000"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh home folder (Homebrew itself stays shared)
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+      - name: install.sh with macOS's bash 3.2
+        run: /bin/bash ./install.sh
+      - name: Doctor + Neovim smoke test
+        run: /bin/bash tests/doctor.sh --nvim

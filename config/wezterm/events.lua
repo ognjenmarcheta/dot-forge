@@ -205,3 +205,17 @@ wezterm.on("open-uri", function(window, pane, uri)
     end
     return true
 end)
+
+-- Toast when a long command finishes while you're in another window
+-- (set by ~/.config/shell/notify.sh through OSC 1337 SetUserVar).
+wezterm.on("user-var-changed", function(window, pane, name, value)
+    if name ~= "dot_cmd_done" or window:is_focused() then
+        return
+    end
+    local status, secs, cmd = value:match("^(%-?%d+)\t(%d+)\t(.*)$")
+    if not status then
+        return
+    end
+    local title = status == "0" and "✓ Finished" or ("✗ Failed (exit " .. status .. ")")
+    window:toast_notification(title, cmd .. "  ·  " .. secs .. "s", nil, 6000)
+end)
