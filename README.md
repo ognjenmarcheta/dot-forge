@@ -4,7 +4,7 @@ Terminal setup for macOS and Linux (Ubuntu): WezTerm, Starship prompt, Neovim
 (EcoVim v5), zoxide, fzf, atuin, eza, bat, delta, mise, yazi, lazygit, btop,
 herdr scripts, OpenCode / agent skills, and the `ai` command.
 
-Day to day: `dot update` (pull + upgrade tools; Neovim plugins stay pinned),
+Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned),
 `dot save "msg"` (commit + push your config edits), `dot doctor`, `dot keys`.
 
 ## New machine
@@ -37,7 +37,7 @@ On a new machine the installer also asks for your git name and email (saved in
 `~/.config/git/local`, not committed).
 
 `install.sh --links-only` skips package installs and only links configs;
-`--upgrade` also upgrades the tools (that's what `dot update` runs).
+`--upgrade` also upgrades the tools (that's what `dot upgrade` runs).
 Running it again is safe: anything it replaces goes to `~/.dotfiles-backup/<time>/`.
 
 ## How it works

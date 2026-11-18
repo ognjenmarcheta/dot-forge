@@ -3,10 +3,14 @@
 #
 #   dot status          what changed in the repo (configs are links, so edits show up here)
 #   dot save "message"  commit everything and push
-#   dot update          pull, re-link, upgrade tools (Neovim plugins stay pinned)
+#   dot upgrade         pull, re-link, upgrade tools (Neovim plugins stay pinned)
 #   dot doctor [--nvim] check this machine matches the dotfiles
 #   dot edit            open the repo in your editor
 #   dot keys            cheat sheet of the shortcuts this setup adds
+#   dot standup         yesterday / today / blockers from your commits, PRs, notes
+#   dot update [CLIENT] this week's update for a client, ready to send
+#   dot note "text"     jot down what happened (calls, decisions, waiting on…)
+#   dot clients         which repo belongs to which client (--init to start)
 #   dot sync-history    sync shell history between your machines (atuin + Bitwarden)
 #   dot sessions [kill] WezTerm tabs kept in the background / end them all
 #   cd "$(dot dir)"     go to the repo
@@ -62,6 +66,13 @@ Shell
 
 Prompt
   click ↑ = cd ..   click a path segment = open folder   click branch = GitHub
+
+Work (AI uses your Claude subscription only — never an API key)
+  dot standup         yesterday / today / blockers, copied (--week, --since "nov 1", --edit)
+  dot update acme     client update for this week (--hours, --lang sr, --edit)
+  dot note "text"     note what happened; ends up in standups and client updates
+  dot clients         which repo belongs to which client (--init creates the list)
+  dot upgrade         pull the dotfiles and upgrade tools (was `dot update`)
 
 Neovim
   Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
@@ -152,7 +163,7 @@ case "${1:-help}" in
         git -C "$DOT" commit -m "$msg"
         git -C "$DOT" push
         ;;
-    update|up)
+    upgrade|up)
         git -C "$DOT" pull --ff-only
         "$DOT/install.sh" --upgrade
         ;;
@@ -168,6 +179,16 @@ case "${1:-help}" in
         ;;
     keys)
         keys
+        ;;
+    standup|update|note|notes|clients)
+        work="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-work"
+        if command -v uv >/dev/null 2>&1; then
+            exec uv run --quiet --script "$work" "$@"
+        elif python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+            exec python3 "$work" "$@"
+        else
+            echo "dot: needs uv or Python 3.11+ (run install.sh)" >&2; exit 1
+        fi
         ;;
     sync-history|sync)
         sync_history

@@ -6,7 +6,7 @@
 # Options:
 #   --links-only   only link configs + hook the shell (no package installs)
 #   --no-nvim      skip installing Neovim plugins
-#   --upgrade      also upgrade the installed tools (what `dot update` runs);
+#   --upgrade      also upgrade the installed tools (what `dot upgrade` runs);
 #                  Neovim and its plugins stay on their pinned versions
 #   -h, --help
 #

@@ -367,11 +367,60 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
     end
 end)
 
+-- ------------------------------------------------- standup / updates -----
+
+-- run a command in a fresh tab of the current window, in the current folder
+local function run_in_new_tab(window, pane, title, cmd)
+    local cwd = pane:get_current_working_dir()
+    local ok, path = pcall(function() return cwd and cwd.file_path end)
+    local tab, new_pane = window:mux_window():spawn_tab {
+        domain = { DomainName = pane:get_domain_name() },
+        cwd = ok and path or nil,
+    }
+    tab:set_title(title)
+    new_pane:send_text(" " .. cmd .. "\n")
+end
+
+-- client keys from ~/.config/dotfiles/clients.toml (section headers)
+local function client_keys()
+    local keys = {}
+    local f = io.open(home .. "/.config/dotfiles/clients.toml", "r")
+    if not f then return keys end
+    for line in f:lines() do
+        local k = line:match("^%[([%w_%-]+)%]")
+        if k and k ~= "settings" then table.insert(keys, { id = k, label = k }) end
+    end
+    f:close()
+    return keys
+end
+
+local client_update = wezterm.action_callback(function(window, pane)
+    local choices = client_keys()
+    if #choices == 0 then
+        run_in_new_tab(window, pane, "clients", "dot clients --init")
+        return
+    end
+    window:perform_action(act.InputSelector {
+        title = "Client update for…",
+        fuzzy = true,
+        choices = choices,
+        action = wezterm.action_callback(function(win, p, id)
+            if id then run_in_new_tab(win, p, "update " .. id, "dot update " .. id) end
+        end),
+    }, pane)
+end)
+
 -- ---------------------------------------------------- palette -----
 
 wezterm.on("augment-command-palette", function(window, pane)
     return {
         { brief = "Projects: open or switch  (Leader p)", icon = "md_folder_search", action = pick_project },
+        {
+            brief = "Standup (yesterday / today / blockers)",
+            icon = "md_account_voice",
+            action = wezterm.action_callback(function(win, p) run_in_new_tab(win, p, "standup", "dot standup") end),
+        },
+        { brief = "Client update…", icon = "md_email_fast", action = client_update },
         { brief = "Copy last command output  (Leader y)", icon = "md_content_copy", action = copy_last_output },
         { brief = "Quick select: copy text on screen  (Leader Space)", icon = "md_cursor_text", action = act.QuickSelect },
         { brief = "Open a URL on screen  (Leader u)", icon = "md_web", action = open_url },

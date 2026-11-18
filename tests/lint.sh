@@ -15,7 +15,7 @@ run() { # label, command...
     fi
 }
 
-bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/agent-notify config/scripts/check-node-updates.sh"
+bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/dot-ai tests/work.sh config/scripts/agent-notify config/scripts/check-node-updates.sh"
 shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/bashrc"
 
 echo "Syntax"
@@ -45,6 +45,9 @@ if [ -n "$luac" ]; then
 else
     echo "  ! luac not installed — skipped"
 fi
+
+echo "Python"
+run "dot-work parses" python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" config/scripts/dot-work
 
 echo "Config files"
 run "git config parses" git config -f config/git/config --list
