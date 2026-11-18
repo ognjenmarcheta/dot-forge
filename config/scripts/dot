@@ -7,6 +7,8 @@
 #   dot doctor [--nvim] check this machine matches the dotfiles
 #   dot edit            open the repo in your editor
 #   dot keys            cheat sheet of the shortcuts this setup adds
+#   dot sync-history    sync shell history between your machines (atuin + Bitwarden)
+#   dot sessions [kill] WezTerm tabs kept in the background / end them all
 #   cd "$(dot dir)"     go to the repo
 set -euo pipefail
 
@@ -38,10 +40,15 @@ WezTerm  (leader = Alt+q, then the key)
   Ctrl+Shift+P        command palette (projects, rename tab, edit dotfiles…)
   Ctrl+Shift+U        emoji / symbol picker
   ● / ✓ on a tab      Claude Code is waiting for you / finished there
+  ▌ + badge colour    the git project the tab / pane is in (same colour every time)
+  closing the window  tabs keep running; reopen WezTerm to get them back
+                      (dot sessions = list them, dot sessions kill = end all)
 
 Shell
   z <name> / z <Tab>  jump to a frequent folder / pick from a menu
   y                   yazi file manager (cd's to where you quit)
+  → (right arrow)     accept the grey suggestion (zsh); Ctrl+→ takes one word
+  Tab                 fuzzy completion menu with previews (zsh, fzf-tab)
   Ctrl+R              atuin history search        Ctrl+T  insert a file   Alt+C  cd into a folder
   rgf <text>          search file contents, open the hit in nvim
   ll / lt             list with git status / tree   (entries are clickable)
@@ -60,6 +67,77 @@ Neovim
   Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
   :PluginsRestore     put plugins back on the tested versions
 EOF
+}
+
+# Bitwarden CLI, unlocked (BW_SESSION set, or unlock now). Fails quietly if unavailable.
+bw_ready() {
+    command -v bw >/dev/null 2>&1 || return 1
+    local st
+    st="$(bw status 2>/dev/null | jq -r .status 2>/dev/null)"
+    case "$st" in
+        unlocked) return 0 ;;
+        locked)
+            echo "Unlocking Bitwarden (master password):"
+            BW_SESSION="$(bw unlock --raw)" || return 1
+            export BW_SESSION ;;
+        *) return 1 ;;   # not logged in: `bw login` first
+    esac
+}
+
+ATUIN_BW_ITEM="atuin sync key"
+
+sync_history() {
+    command -v atuin >/dev/null || { echo "atuin isn't installed (run install.sh)"; exit 1; }
+    if [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/session" ]; then
+        echo "Already syncing:"; atuin status 2>/dev/null | sed -n '1,6p'; atuin sync; return
+    fi
+    echo "Sync shell history (Ctrl+R, and the grey suggestions in zsh) between your"
+    echo "machines. End-to-end encrypted: the server only stores encrypted data; the"
+    echo "key stays on your machines (and in Bitwarden, if you use it)."
+    printf 'Is this your first machine (no atuin account yet)? [y/N] '
+    read -r first || exit 1
+    local user email key=""
+    case "$first" in
+        y|Y|yes)
+            printf 'Username: '; read -r user
+            printf 'E-mail:   '; read -r email
+            atuin register -u "$user" -e "$email" || exit 1
+            key="$(atuin key)"
+            if bw_ready; then
+                bw get template item | jq --arg k "$key" --arg n "$ATUIN_BW_ITEM" \
+                    '.type = 2 | .secureNote = {type: 0} | .name = $n | .notes = $k | .login = null' \
+                    | bw encode | bw create item >/dev/null && bw sync >/dev/null \
+                    && echo "✓ key saved in Bitwarden as \"$ATUIN_BW_ITEM\""
+            else
+                echo
+                echo "Save this key in Bitwarden (secure note \"$ATUIN_BW_ITEM\"); other machines need it:"
+                echo "  $key"
+            fi
+            ;;
+        *)
+            printf 'Username: '; read -r user
+            if bw_ready; then key="$(bw get notes "$ATUIN_BW_ITEM" 2>/dev/null || true)"; fi
+            if [ -n "$key" ]; then
+                echo "✓ key from Bitwarden"
+                atuin login -u "$user" -k "$key" || exit 1
+            else
+                echo "(no Bitwarden CLI or no \"$ATUIN_BW_ITEM\" note: paste the key when asked)"
+                atuin login -u "$user" || exit 1
+            fi
+            ;;
+    esac
+    atuin sync && echo "✓ history synced; it keeps syncing in the background"
+}
+
+sessions() {
+    command -v wezterm >/dev/null || { echo "wezterm not found"; exit 1; }
+    if [ "${1:-}" = kill ]; then
+        printf 'End ALL WezTerm sessions, including running programs? [y/N] '
+        read -r a; case "$a" in y|Y|yes) ;; *) exit 0 ;; esac
+        if pkill -f wezterm-mux-server; then echo "✓ session server stopped"; else echo "no session server running"; fi
+        return
+    fi
+    wezterm cli --prefer-mux list 2>/dev/null || echo "no session server running (persistent sessions off?)"
 }
 
 case "${1:-help}" in
@@ -91,7 +169,14 @@ case "${1:-help}" in
     keys)
         keys
         ;;
+    sync-history|sync)
+        sync_history
+        ;;
+    sessions)
+        shift
+        sessions "$@"
+        ;;
     help|-h|--help|*)
-        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+        awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
         ;;
 esac

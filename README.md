@@ -49,6 +49,7 @@ Running it again is safe: anything it replaces goes to `~/.dotfiles-backup/<time
 | `config/shell/aliases.sh` | sourced from `~/.bashrc` / `~/.zshrc` |
 | `config/shell/local.sh`   | per-machine extras, sourced last (not committed) |
 | `config/git/local`        | git identity / per-machine git (not committed)   |
+| `config/wezterm/machine.lua` | per-machine WezTerm settings (not committed)  |
 
 Because configs are symlinks, editing `~/.config/wezterm/config.lua` edits this
 repo — commit and push to keep machines in sync.
@@ -77,6 +78,21 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 - **Claude Code alerts**: a ● on the tab (and a toast if you're elsewhere)
   when Claude waits for you, ✓ when it's done — via hooks that install.sh adds
   to `~/.claude/settings.json`.
+- **Sessions survive closing WezTerm**: tabs run in WezTerm's background
+  session server; reopening the window brings them back (agents and dev
+  servers keep running). `dot sessions` lists them, `dot sessions kill` ends
+  all. Linux uses the regular WezTerm from its apt repository, because the
+  Flatpak's sandbox can't keep anything running. Turn off per machine with
+  `persistent_sessions = false` in `~/.config/wezterm/machine.lua`.
+- **Project colours**: every git repo gets its own colour, shown as a stripe
+  on its tabs, a badge with its name and a tinted tab bar. Pick colours in
+  `machine.lua` (`project_colors = { ["kaine-forge"] = "#f5a97f" }`).
+- **zsh** (default shell): grey suggestions as you type from your atuin
+  history (→ accepts), syntax highlighting, fzf-tab completion menus.
+  bash keeps working with the same setup.
+- **History sync**: `dot sync-history` sets up atuin's end-to-end encrypted
+  sync between Mac and Linux; the key goes into Bitwarden (`bw` CLI) so the
+  next machine logs in without copying it by hand.
 - **Prompt**: Starship with clickable user / path segments / git branch; `↑` = `cd ..`.
 - **Shell**: `ls`/`ll` via eza (icons, git status, clickable), `cat`/`man` via bat,
   `z` + Tab menu of frequent folders, Ctrl+R = atuin history, Ctrl+T / Alt+C =
