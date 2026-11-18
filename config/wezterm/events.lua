@@ -113,12 +113,20 @@ wezterm.on("update-right-status", function(window, _)
         ARROW_FOREGROUND = { Foreground = { Color = "#1e2030" } }
     end -- arrow color based on if tab is first pane
 
-    window:set_left_status(wezterm.format {
+    local left = {
         { Background = { Color = "#b7bdf8" } },
         { Text = prefix },
         ARROW_FOREGROUND,
-        { Text = SOLID_LEFT_ARROW }
-    })
+        { Text = SOLID_LEFT_ARROW },
+    }
+    -- git project of the active pane: coloured badge + tinted tab bar
+    local pane = window:active_pane()
+    if pane then
+        for _, item in ipairs(require("features").project_status(window, pane)) do
+            table.insert(left, item)
+        end
+    end
+    window:set_left_status(wezterm.format(left))
 end)
 
 wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_width)
@@ -153,10 +161,14 @@ wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_wid
         bg = "#494d64"
     end
 
+    -- thin stripe in the tab's project colour
+    local _, project_color = require("features").project(tab.active_pane.current_working_dir)
     return {
         { Background = { Color = bg } },
+        { Foreground = { Color = project_color or bg } },
+        { Text = "▌" },
         { Foreground = { Color = fg } },
-        { Text = prefix .. label .. suffix },
+        { Text = prefix:sub(2) .. label .. suffix },
     }
 end)
 

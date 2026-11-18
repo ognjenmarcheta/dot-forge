@@ -122,7 +122,50 @@ y() {
 
 # --- zsh: Tab completion (macOS's stock zsh leaves it off) --------------------
 if [ -n "$ZSH_VERSION" ] && ! (( ${+functions[compdef]} )); then
-    autoload -Uz compinit && compinit -i
+    # cache file outside ZDOTDIR (WezTerm points ZDOTDIR into the dotfiles repo)
+    mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
+    autoload -Uz compinit && compinit -i -d "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump-$ZSH_VERSION"
+fi
+
+# --- zsh: history, options, keys, plugins -------------------------------------
+# Plugins (pinned, installed by install.sh into ~/.local/share/zsh-plugins):
+#   fzf-tab               Tab opens a fuzzy menu with previews
+#   zsh-autosuggestions   grey suggestion from history (atuin) as you type; → accepts
+#   zsh-syntax-highlighting  loaded at the very end of this file
+_dot_zp="$HOME/.local/share/zsh-plugins"
+if [ -n "$ZSH_VERSION" ]; then
+    HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
+    HISTSIZE=100000
+    SAVEHIST=100000
+    setopt extended_history inc_append_history share_history \
+        hist_ignore_dups hist_ignore_space hist_reduce_blanks
+    setopt auto_cd interactive_comments no_beep
+    bindkey -e                                   # Emacs keys, like bash
+    bindkey '^[[1;5C' forward-word               # Ctrl+→
+    bindkey '^[[1;5D' backward-word              # Ctrl+←
+    bindkey '^[[H' beginning-of-line             # Home
+    bindkey '^[[F' end-of-line                   # End
+    bindkey '^[[3~' delete-char                  # Delete
+    bindkey '^H' backward-kill-word              # Ctrl+Backspace
+
+    zstyle ':completion:*' matcher-list 'm:{a-z}={A-Z}'   # case-insensitive
+    zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+    zstyle ':completion:*:descriptions' format '[%d]'     # fzf-tab group headers
+    zstyle ':completion:*' menu no                         # fzf-tab draws the menu
+    zstyle ':fzf-tab:*' switch-group '<' '>'
+    zstyle ':fzf-tab:complete:(cd|z|eza|ls):*' fzf-preview \
+        'eza -1 --color=always --icons=always $realpath 2>/dev/null || ls -1 $realpath'
+
+    if [[ -o zle ]] && _dot_has fzf && [ -f "$_dot_zp/fzf-tab/fzf-tab.plugin.zsh" ]; then
+        . "$_dot_zp/fzf-tab/fzf-tab.plugin.zsh"
+    fi
+    if [[ -o zle ]] && [ -f "$_dot_zp/zsh-autosuggestions/zsh-autosuggestions.zsh" ]; then
+        # atuin's init (below) puts its own history search in front of these
+        ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+        ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=200
+        ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
+        . "$_dot_zp/zsh-autosuggestions/zsh-autosuggestions.zsh"
+    fi
 fi
 
 # --- bash: preexec/precmd hooks (needed by atuin and command notifications) ---
@@ -221,6 +264,14 @@ if [ -n "$BASH_VERSION" ] && _dot_has zoxide && declare -F __zoxide_z_complete_h
     }
     complete -F _z_recent_complete -o filenames -- z
 fi
+
+# --- zsh: syntax highlighting — must come after every other widget -----------
+# (commands turn red when they don't exist, before you press Enter)
+if [ -n "$ZSH_VERSION" ] && [[ -o zle ]] && [ -f "$_dot_zp/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]; then
+    ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets)
+    . "$_dot_zp/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+fi
+unset _dot_zp
 
 # --- Machine-specific overrides (not in git) ---------------------------------
 [ -f "$HOME/.config/shell/local.sh" ] && . "$HOME/.config/shell/local.sh"
