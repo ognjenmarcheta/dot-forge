@@ -302,7 +302,12 @@ local function git_root(dir)
     if root_cache[dir] ~= nil then return root_cache[dir] or nil end
     local d = dir
     while d and d ~= "" and d ~= home do
-        if #wezterm.glob(d .. "/.git") > 0 then
+        -- plain io.open, not wezterm.glob: glob is async and errors inside
+        -- synchronous events like format-tab-title ("attempt to yield from
+        -- outside a coroutine"). Opening works for a .git dir and a worktree's .git file.
+        local f = io.open(d .. "/.git", "r")
+        if f then
+            f:close()
             root_cache[dir] = d
             return d
         end
