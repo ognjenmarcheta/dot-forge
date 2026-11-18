@@ -3,10 +3,17 @@
 #
 #   dot status          what changed in the repo (configs are links, so edits show up here)
 #   dot save "message"  commit everything and push
-#   dot update          pull, re-link, upgrade tools (Neovim plugins stay pinned)
+#   dot upgrade         pull, re-link, upgrade tools (Neovim plugins stay pinned)
 #   dot doctor [--nvim] check this machine matches the dotfiles
 #   dot edit            open the repo in your editor
 #   dot keys            cheat sheet of the shortcuts this setup adds
+#   dot standup         yesterday / today / blockers from your commits, PRs, notes
+#   dot update [CLIENT] this week's update for a client, ready to send
+#   dot note "text"     jot down what happened (calls, decisions, waiting on…)
+#   dot clients         which repo belongs to which client (--init to start)
+#   dot save-game [NAME] keep this WezTerm workspace (tabs, splits, programs, branches)
+#   dot load-game NAME  bring a saved workspace back (also after a reboot)
+#   dot games           list saves
 #   dot sync-history    sync shell history between your machines (atuin + Bitwarden)
 #   dot sessions [kill] WezTerm tabs kept in the background / end them all
 #   cd "$(dot dir)"     go to the repo
@@ -40,7 +47,12 @@ WezTerm  (leader = Alt+q, then the key)
   Ctrl+Shift+P        command palette (projects, rename tab, edit dotfiles…)
   Ctrl+Shift+U        emoji / symbol picker
   ● / ✓ on a tab      Claude Code is waiting for you / finished there
+  Leader a            agent radar: every Claude session (● needs you, ⟳ working, ✓ done) → jump
+  Leader ?            Claude in a side pane, already told about the folder, git and last output
   ▌ + badge colour    the git project the tab / pane is in (same colour every time)
+  red flash           a command failed · warmer, dimmer colours after 22:00 (machine.lua: night = false)
+  right of tab bar    ● agents waiting · CPU / GPU °C · RAM · 🐳 containers · CI runner
+  save points         palette "Save game" / "Load game…", or dot save-game / load-game / games
   closing the window  tabs keep running; reopen WezTerm to get them back
                       (dot sessions = list them, dot sessions kill = end all)
 
@@ -54,6 +66,9 @@ Shell
   ll / lt             list with git status / tree   (entries are clickable)
   ai <request>        shell command from Claude    ai explain <cmd>
   ai fix              right after a failure: reads the error on screen, suggests a fix
+  F1                  use the 💡 fix suggested under the prompt after a typo (DOT_FIX=0 = off)
+  Alt+V               push-to-talk: speak, press a key → ai "…" (speech stays on this machine)
+  cd into a repo      after 3+ days away: welcome card (branch, PRs, CI, what others pushed)
   Ctrl+G              navi: saved commands with blanks to fill in (~/.config/navi/cheats)
   tldr <cmd>          short examples instead of the man page
   Tab                 completions for gh, docker, kubectl, npm… (carapace)
@@ -62,6 +77,13 @@ Shell
 
 Prompt
   click ↑ = cd ..   click a path segment = open folder   click branch = GitHub
+
+Work (AI uses your Claude subscription only — never an API key)
+  dot standup         yesterday / today / blockers, copied (--week, --since "nov 1", --edit)
+  dot update acme     client update for this week (--hours, --lang sr, --edit)
+  dot note "text"     note what happened; ends up in standups and client updates
+  dot clients         which repo belongs to which client (--init creates the list)
+  dot upgrade         pull the dotfiles and upgrade tools (was `dot update`)
 
 Neovim
   Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
@@ -152,7 +174,7 @@ case "${1:-help}" in
         git -C "$DOT" commit -m "$msg"
         git -C "$DOT" push
         ;;
-    update|up)
+    upgrade|up)
         git -C "$DOT" pull --ff-only
         "$DOT/install.sh" --upgrade
         ;;
@@ -168,6 +190,33 @@ case "${1:-help}" in
         ;;
     keys)
         keys
+        ;;
+    standup|update|note|notes|clients)
+        work="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-work"
+        if command -v uv >/dev/null 2>&1; then
+            exec uv run --quiet --script "$work" "$@"
+        elif python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+            exec python3 "$work" "$@"
+        else
+            echo "dot: needs uv or Python 3.11+ (run install.sh)" >&2; exit 1
+        fi
+        ;;
+    save-game|load-game)
+        [ "${TERM_PROGRAM:-}" = WezTerm ] || { echo "dot: save points live in WezTerm — run this in a WezTerm tab" >&2; exit 1; }
+        var=dot_save; [ "$1" = load-game ] && var=dot_load
+        name="${2:-}"
+        if [ "$var" = dot_load ] && [ -z "$name" ]; then echo "usage: dot load-game NAME   (dot games lists them)" >&2; exit 1; fi
+        printf '\033]1337;SetUserVar=%s=%s\007' "$var" "$(printf '%s' "${name:-__workspace__}" | base64 | tr -d '\n')"
+        if [ "$var" = dot_save ]; then echo "💾 saving ${name:-this workspace}… (WezTerm shows a notification)"
+        else echo "▶ loading $name…"; fi
+        ;;
+    games)
+        saves="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles/saves"
+        if ! ls "$saves"/*.json >/dev/null 2>&1; then echo "no saves yet — dot save-game NAME"; exit 0; fi
+        for f in "$saves"/*.json; do
+            jq -r --arg f "$(basename "$f" .json)" \
+                '"\($f)\t\(.saved_at | strflocaltime("%a %d %b %H:%M"))\t\([.windows[].tabs[]] | length) tabs\t\([.windows[].tabs[].panes[]] | length) panes"' "$f" 2>/dev/null
+        done | awk -F'\t' '{ printf "%-24s %-18s %s · %s\n", $1, $2, $3, $4 }'
         ;;
     sync-history|sync)
         sync_history

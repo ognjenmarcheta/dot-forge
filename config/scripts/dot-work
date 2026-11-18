@@ -1,0 +1,664 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot-work — standups, client updates and work notes from what you actually did.
+
+Reads, for every git repo under ~/Github (or the roots in clients.toml):
+your commits, current branch / uncommitted work, your PRs and their CI (gh),
+the commands you ran there and roughly how long (atuin), and your notes
+(`dot note`). Then Claude — through dot-ai, i.e. your Claude subscription,
+never an API key — writes the text.
+
+  dot standup [--week | --since WHEN] [--edit] [--context] [--no-copy]
+  dot update [CLIENT] [--since WHEN] [--hours] [--lang sr] [--edit] [--context]
+  dot note [CLIENT] "text"          (inside a repo: filed under that repo)
+  dot notes [CLIENT]                show recent notes
+  dot clients [--init]              which repo belongs to which client
+
+Client mapping: ~/.config/dotfiles/clients.toml (not in git; `dot clients --init`).
+Everything except the final summary request stays on this machine.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fnmatch
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "dotfiles" / "clients.toml"
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share")) / "dotfiles"
+NOTES = DATA / "notes"
+REPORTS = DATA / "reports"
+DOT_AI = Path(__file__).resolve().parent / "dot-ai"
+LANGS = {"en": "English", "sr": "Serbian (Latin script)", "bs": "Bosnian", "hr": "Croatian",
+         "de": "German", "fr": "French", "es": "Spanish", "it": "Italian", "nl": "Dutch"}
+SECRET_RE = re.compile(
+    r"(ghp_|gho_|github_pat_|sk-ant-|xox[bp]-|AKIA[0-9A-Z]{8}|BEGIN [A-Z ]*PRIVATE KEY|"
+    r"password|passwd|secret|token|api[_-]?key|authorization:|bearer |://[^/\s]+:[^@\s]+@)", re.I)
+
+
+# ----------------------------------------------------------------- helpers ---
+
+def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30, env: dict | None = None) -> str:
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, **(env or {})})
+        return r.stdout if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def have(cmd: str) -> bool:
+    return shutil.which(cmd) is not None
+
+
+def expand(p: str) -> str:
+    return os.path.expanduser(os.path.expandvars(p))
+
+
+def die(msg: str, code: int = 1):
+    print(f"dot: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def human_hours(seconds: float) -> str:
+    m = int(round(seconds / 60))
+    return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m"
+
+
+# ------------------------------------------------------------------ config ---
+
+@dataclass
+class Client:
+    key: str
+    name: str
+    patterns: list[str]
+    contact: str = ""
+    lang: str = "en"
+    style: str = "friendly, short, non-technical"
+    signoff: str = ""
+
+
+@dataclass
+class Config:
+    roots: list[Path]
+    emails: list[str]
+    name: str
+    clients: dict[str, Client]
+
+
+def load_config() -> Config:
+    raw: dict = {}
+    if CONFIG.exists():
+        try:
+            raw = tomllib.loads(CONFIG.read_text())
+        except tomllib.TOMLDecodeError as e:
+            die(f"{CONFIG}: {e}")
+    s = raw.get("settings", {})
+    roots = [Path(expand(r)) for r in s.get("roots", ["~/Github"])]
+    emails = list(s.get("emails", []))
+    me = run(["git", "config", "--global", "user.email"]).strip()
+    if me and me not in emails:
+        emails.append(me)
+    name = s.get("name") or run(["git", "config", "--global", "user.name"]).strip()
+    clients = {}
+    for key, v in raw.items():
+        if key == "settings" or not isinstance(v, dict):
+            continue
+        clients[key] = Client(key=key, name=v.get("name", key), patterns=list(v.get("repos", [])),
+                              contact=v.get("contact", ""), lang=v.get("lang", "en"),
+                              style=v.get("style", "friendly, short, non-technical"),
+                              signoff=v.get("signoff", ""))
+    return Config(roots, emails, name, clients)
+
+
+# ------------------------------------------------------------------- repos ---
+
+@dataclass
+class Repo:
+    path: Path
+    remote: str  # github.com/owner/repo, or "" if none
+    client: str | None = None
+    commits: list[str] = field(default_factory=list)
+    wip: str = ""
+    prs: list[str] = field(default_factory=list)
+    ci: list[str] = field(default_factory=list)
+    commands: list[str] = field(default_factory=list)
+    seconds: float = 0.0
+    notes: list[str] = field(default_factory=list)
+    dirty: bool = False
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    @property
+    def slug(self) -> str:  # owner/repo for gh
+        return "/".join(self.remote.split("/")[1:3]) if self.remote.startswith("github.com/") else ""
+
+    def active(self) -> bool:
+        return bool(self.commits or self.prs or self.notes or self.seconds >= 300 or self.dirty)
+
+
+def normalize_remote(url: str) -> str:
+    url = url.strip()
+    url = re.sub(r"^[a-z+]+://", "", url)
+    url = re.sub(r"^[^@/]+@", "", url)
+    url = url.replace(":", "/", 1) if re.match(r"^[^/]+:[^/]", url) else url
+    return url.removesuffix(".git").lower()
+
+
+def find_repos(roots: list[Path]) -> list[Path]:
+    found = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        if (root / ".git").exists():
+            found.append(root)
+        for d in sorted(root.iterdir()):
+            if d.name.startswith(".") or not d.is_dir():
+                continue
+            if (d / ".git").exists():
+                found.append(d)
+                continue
+            for c in sorted(d.iterdir()) if os.access(d, os.R_OK) else []:
+                if c.is_dir() and not c.name.startswith(".") and (c / ".git").exists():
+                    found.append(c)
+    return found
+
+
+def client_for(path: Path, remote: str, clients: dict[str, Client]) -> str | None:
+    for key, c in clients.items():
+        for pat in c.patterns:
+            if pat.startswith(("~", "/", "$")):
+                pp = expand(pat).rstrip("/")
+                if fnmatch.fnmatch(str(path), pp) or str(path).startswith(pp + "/") or str(path) == pp:
+                    return key
+            elif remote and fnmatch.fnmatch(remote, pat.lower().removesuffix(".git")):
+                return key
+    return None
+
+
+def load_repos(cfg: Config) -> list[Repo]:
+    repos = []
+    for p in find_repos(cfg.roots):
+        remote = normalize_remote(run(["git", "-C", str(p), "remote", "get-url", "origin"]))
+        repos.append(Repo(p, remote, client_for(p, remote, cfg.clients)))
+    return repos
+
+
+# ------------------------------------------------------------- time window ---
+
+def to_epoch(when: str, any_repo: Path | None) -> int:
+    """Anything git understands: "yesterday", "monday", "nov 1", "3 days ago", "2026-11-01"."""
+    out = run(["git", "rev-parse", f"--since={when}"], cwd=any_repo)
+    m = re.search(r"--max-age=(\d+)", out)
+    if not m:
+        die(f"don't understand the date \"{when}\"")
+    return int(m.group(1))
+
+
+def last_workday_start(now: dt.datetime) -> dt.datetime:
+    back = {0: 3, 6: 2, 5: 1}.get(now.weekday(), 1)  # Mon -> Fri, Sun -> Fri, Sat -> Fri
+    d = (now - dt.timedelta(days=back)).date()
+    return dt.datetime.combine(d, dt.time())
+
+
+def week_start(now: dt.datetime) -> dt.datetime:
+    monday = now.date() - dt.timedelta(days=now.weekday())
+    if now.weekday() == 0 and now.hour < 12:  # Monday morning: last week
+        monday -= dt.timedelta(days=7)
+    return dt.datetime.combine(monday, dt.time())
+
+
+# ---------------------------------------------------------------- gathering ---
+
+def gather_git(r: Repo, since: int, emails: list[str]):
+    authors = []
+    for e in emails:
+        authors += ["--author", re.escape(e)]
+    if not authors:
+        return
+    log = run(["git", "log", "--all", "--no-merges", f"--since=@{since}", *authors,
+               "--date=format:%a %d %b", "--format=%ad\x1f%s\x1f%b\x1e"], cwd=r.path)
+    seen = set()
+    for entry in log.split("\x1e"):
+        parts = entry.strip("\n").split("\x1f")
+        if len(parts) < 2 or parts[1] in seen:
+            continue
+        seen.add(parts[1])
+        body = " ".join(parts[2].split())[:160] if len(parts) > 2 and parts[2].strip() else ""
+        r.commits.append(f"{parts[0]}: {parts[1]}" + (f" — {body}" if body else ""))
+    branch = run(["git", "branch", "--show-current"], cwd=r.path).strip() or "(detached)"
+    dirty = [l for l in run(["git", "status", "--porcelain"], cwd=r.path).splitlines() if l.strip()]
+    ab = run(["git", "rev-list", "--left-right", "--count", "@{u}...HEAD"], cwd=r.path).split()
+    bits = [f"branch {branch}"]
+    if len(ab) == 2 and ab != ["0", "0"]:
+        bits.append(f"{ab[1]} ahead / {ab[0]} behind")
+    if dirty:
+        stat = run(["git", "diff", "--shortstat", "HEAD"], cwd=r.path).strip()
+        bits.append(f"{len(dirty)} uncommitted file(s)" + (f" ({stat})" if stat else ""))
+        r.dirty = True
+    r.wip = ", ".join(bits)
+
+
+def gather_github(repos: list[Repo], since: int):
+    if os.environ.get("DOT_WORK_NO_GH") or not have("gh"):
+        return
+    by_slug = {r.slug.lower(): r for r in repos if r.slug}
+    if not by_slug:
+        return
+    day = dt.datetime.fromtimestamp(since).strftime("%Y-%m-%d")
+    fields = "number,title,state,isDraft,repository,url"
+
+    def search(*extra: str) -> list[dict]:
+        out = run(["gh", "search", "prs", f"--updated=>={day}", "--limit", "100", "--json", fields, *extra], timeout=40)
+        try:
+            return json.loads(out) if out else []
+        except json.JSONDecodeError:
+            return []
+
+    merged = {(p["repository"]["nameWithOwner"].lower(), p["number"]) for p in search("--author=@me", "--merged")}
+    for p in search("--author=@me"):
+        r = by_slug.get(p["repository"]["nameWithOwner"].lower())
+        if not r:
+            continue
+        key = (p["repository"]["nameWithOwner"].lower(), p["number"])
+        state = "merged" if key in merged else ("draft" if p.get("isDraft") else p.get("state", ""))
+        r.prs.append(f"#{p['number']} \"{p['title']}\" — {state} (mine)")
+    for p in search("--reviewed-by=@me"):
+        r = by_slug.get(p["repository"]["nameWithOwner"].lower())
+        if r:
+            r.prs.append(f"#{p['number']} \"{p['title']}\" — reviewed by me ({p.get('state', '')})")
+    for r in repos:
+        if not r.slug or not (r.commits or r.prs):
+            continue
+        out = run(["gh", "run", "list", "-R", r.slug, "-L", "8", "--json",
+                   "conclusion,status,workflowName,headBranch,createdAt"], timeout=20)
+        try:
+            runs = json.loads(out) if out else []
+        except json.JSONDecodeError:
+            runs = []
+        latest = {}
+        for x in runs:
+            k = (x.get("workflowName"), x.get("headBranch"))
+            if k not in latest and x.get("createdAt", "") >= dt.datetime.fromtimestamp(since).isoformat():
+                latest[k] = x
+        for (wf, br), x in latest.items():
+            res = x.get("conclusion") or x.get("status")
+            mark = {"success": "✓ passing", "failure": "✗ failing", "cancelled": "cancelled"}.get(res, res)
+            r.ci.append(f"{wf} on {br}: {mark}")
+
+
+DUR_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)")
+
+
+def parse_duration(s: str) -> float:
+    unit = {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400}
+    return sum(float(n) * unit[u] for n, u in DUR_RE.findall(s))
+
+
+def gather_history(repos: list[Repo], since: int):
+    """Commands you ran in each repo + rough time spent there (from atuin)."""
+    if not have("atuin"):
+        return
+    env = {}
+    if not os.environ.get("ATUIN_SESSION"):
+        env["ATUIN_SESSION"] = run(["atuin", "uuid"]).strip() or "dot-work"
+    # `history list` keeps repeated commands (`search` collapses them), so the
+    # time estimate sees every run; filter the period here
+    out = run(["atuin", "history", "list",
+               "--format", "{time}\t{directory}\t{exit}\t{duration}\t{command}"], env=env, timeout=60)
+    rows = []
+    for line in out.splitlines():
+        parts = line.split("\t", 4)
+        if len(parts) < 5:
+            continue
+        try:
+            t = dt.datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            continue
+        if t >= since:
+            rows.append((t, parts[1], parse_duration(parts[3]), parts[4]))
+    rows.sort()
+    paths = sorted(((str(r.path), r) for r in repos), key=lambda x: -len(x[0]))
+
+    def repo_of(d: str) -> Repo | None:
+        for p, r in paths:
+            if d == p or d.startswith(p + "/"):
+                return r
+        return None
+
+    counts: dict[str, Counter] = defaultdict(Counter)
+    by_path = {str(r.path): r for r in repos}
+    for i, (t, d, dur, cmd) in enumerate(rows):
+        r = repo_of(d)
+        if not r:
+            continue
+        gap = rows[i + 1][0] - t if i + 1 < len(rows) else 300
+        # time at the keyboard: until the next command, at most 15 min; long
+        # runs (dev servers, agents) count up to 4 h
+        r.seconds += max(min(gap, 900), min(dur, 4 * 3600))
+        if SECRET_RE.search(cmd) or cmd.startswith((" ", "export ")):
+            continue
+        words = cmd.split()
+        key = " ".join(words[:3])[:80]
+        counts[str(r.path)][key] += 1
+    for path, c in counts.items():
+        by_path[path].commands = [f"{k} (×{n})" if n > 1 else k for k, n in c.most_common(15)]
+
+
+def note_file(key: str) -> Path:
+    return NOTES / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', key)}.md"
+
+
+def gather_notes(repos: list[Repo], since: int):
+    since_day = dt.datetime.fromtimestamp(since).strftime("%Y-%m-%d")
+    placed: set[tuple[str, str]] = set()  # a client-wide note goes under one repo only
+    for r in repos:
+        for key in {r.client, f"repo-{r.name}"} - {None}:
+            f = note_file(key)
+            if not f.exists():
+                continue
+            for line in f.read_text().splitlines():
+                m = re.match(r"- (\d{4}-\d{2}-\d{2}) [\d:]+ \[([^\]]*)\] (.*)", line)
+                if m and m.group(1) >= since_day and (m.group(2) in ("", r.name) or key == f"repo-{r.name}"):
+                    entry = f"{m.group(1)}: {m.group(3)}"
+                    if m.group(2) == "":
+                        if (key, entry) in placed:
+                            continue
+                        placed.add((key, entry))
+                    if entry not in r.notes:
+                        r.notes.append(entry)
+
+
+def gather(cfg: Config, since: int, only_client: str | None) -> list[Repo]:
+    repos = load_repos(cfg)
+    if only_client:
+        repos = [r for r in repos if r.client == only_client]
+    for r in repos:
+        gather_git(r, since, cfg.emails)
+    gather_history(repos, since)
+    gather_notes(repos, since)
+    gather_github(repos, since)
+    return [r for r in repos if r.active()]
+
+
+def context_text(repos: list[Repo], cfg: Config, hours: bool) -> str:
+    out = []
+    for r in repos:
+        client = cfg.clients[r.client].name if r.client in cfg.clients else "internal"
+        out.append(f"## {r.name}  (client: {client})")
+        if r.wip:
+            out.append(f"Now: {r.wip}")
+        if hours and r.seconds:
+            out.append(f"Time spent (approx.): {human_hours(r.seconds)}")
+        for title, items in (("My commits", r.commits), ("Pull requests", r.prs), ("CI", r.ci),
+                             ("Commands I ran (sample)", r.commands), ("My notes", r.notes)):
+            if items:
+                out.append(f"{title}:")
+                out += [f"- {x}" for x in items[:40]]
+        out.append("")
+    total = sum(r.seconds for r in repos)
+    if hours and total:
+        out.append(f"Total time (approx.): {human_hours(total)}")
+    return "\n".join(out).strip()
+
+
+# ---------------------------------------------------------------- writing ---
+
+STANDUP_PROMPT = """Write my daily standup from the work log below.
+Format exactly:
+**Yesterday**
+- …
+**Today**
+- …
+**Blockers**
+- … (or "None")
+Rules: terse and technical is fine; group by project when there are several
+(prefix bullets with the project name); at most 6 bullets per section; "Today"
+comes from open branches, uncommitted work, open/draft PRs and my notes; never
+invent work that isn't in the log; no commit hashes; no preamble."""
+
+UPDATE_PROMPT = """Write a short update for my client {client} about the period {period}{to_whom}.
+Language: {lang}. Tone: {style}.
+Structure: a one-line greeting, then sections "Done", "Next" and "Needed from you"
+(skip a section that would be empty), then a one-line sign-off as {me}.
+Rules: describe outcomes the client cares about, in plain language — no commit
+hashes, branch names or internal jargon; merge related commits into one bullet;
+"Next" comes from open PRs, uncommitted work and my notes; "Needed from you" only
+from my notes or blocked items; never invent anything that isn't in the log;
+never mention other clients or internal projects.{hours}
+Reply with the message only."""
+
+
+def copy_to_clipboard(text: str) -> bool:
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["pbcopy"]):
+        if have(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text, text=True, timeout=5, check=True)
+                return True
+            except (OSError, subprocess.SubprocessError):
+                continue
+    return False
+
+
+def ask_claude(instruction: str, context: str) -> str:
+    if not DOT_AI.exists():
+        die("dot-ai missing")
+    print("\033[2m… writing it with Claude (your subscription)\033[0m", file=sys.stderr)
+    r = subprocess.run([str(DOT_AI), instruction], input=context, text=True, capture_output=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        sys.stderr.write(r.stderr)
+        die("Claude couldn't write it (see above)")
+    return r.stdout.strip()
+
+
+def deliver(text: str, kind: str, args) -> None:
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    f = REPORTS / f"{dt.date.today():%Y-%m-%d}-{kind}.md"
+    f.write_text(text + "\n")
+    if args.edit:
+        subprocess.run([os.environ.get("EDITOR", "nvim"), str(f)])
+        text = f.read_text().strip()
+    print(text)
+    copied = (not args.no_copy) and copy_to_clipboard(text)
+    print(f"\n\033[2m{'copied to clipboard · ' if copied else ''}saved: {f}\033[0m", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- commands ---
+
+def cmd_standup(args):
+    cfg = load_config()
+    now = dt.datetime.now()
+    repos0 = load_repos(cfg)
+    any_repo = repos0[0].path if repos0 else None
+    start = (to_epoch(args.since, any_repo) if args.since
+             else int((week_start(now) if args.week else last_workday_start(now)).timestamp()))
+    repos = gather(cfg, start, None)
+    ctx = context_text(repos, cfg, hours=False)
+    if args.context:
+        print(ctx or "(nothing found)")
+        return
+    if not repos:
+        die(f"no work found since {dt.datetime.fromtimestamp(start):%a %d %b %H:%M}")
+    period = f"Since {dt.datetime.fromtimestamp(start):%A %d %B}; today is {now:%A %d %B}."
+    deliver(ask_claude(STANDUP_PROMPT + "\n" + period, ctx), "standup", args)
+
+
+def resolve_client(cfg: Config, name: str | None) -> str:
+    if name:
+        if name in cfg.clients:
+            return name
+        for k, c in cfg.clients.items():
+            if c.name.lower() == name.lower():
+                return k
+        die(f"no client \"{name}\" in {CONFIG} (have: {', '.join(cfg.clients) or 'none — run dot clients --init'})")
+    cwd = Path.cwd()
+    for r in load_repos(cfg):
+        if (cwd == r.path or r.path in cwd.parents) and r.client:
+            return r.client
+    die("which client? `dot update CLIENT` (or run it inside one of their repos).\n"
+        "     To upgrade the dotfiles and tools, that's now `dot upgrade`.")
+
+
+def cmd_update(args):
+    cfg = load_config()
+    key = resolve_client(cfg, args.client)
+    c = cfg.clients[key]
+    now = dt.datetime.now()
+    repos0 = load_repos(cfg)
+    any_repo = repos0[0].path if repos0 else None
+    start = to_epoch(args.since, any_repo) if args.since else int(week_start(now).timestamp())
+    repos = gather(cfg, start, key)
+    ctx = context_text(repos, cfg, hours=args.hours)
+    if args.context:
+        print(ctx or "(nothing found)")
+        return
+    if not repos:
+        die(f"no work for {c.name} since {dt.datetime.fromtimestamp(start):%a %d %b}")
+    lang = args.lang or c.lang
+    prompt = UPDATE_PROMPT.format(
+        client=c.name,
+        period=f"{dt.datetime.fromtimestamp(start):%A %d %B} – {now:%A %d %B}",
+        to_whom=f", addressed to {c.contact}" if c.contact else "",
+        lang=LANGS.get(lang, lang), style=c.style,
+        me=c.signoff or (cfg.name.split()[0] if cfg.name else "me"),
+        hours=" Mention the total time spent (the approximate total from the log, rounded to half hours)." if args.hours else "",
+    )
+    deliver(ask_claude(prompt, ctx), f"update-{key}", args)
+
+
+def current_repo(cfg: Config) -> Repo | None:
+    cwd = Path.cwd()
+    best = None
+    for r in load_repos(cfg):
+        if cwd == r.path or r.path in cwd.parents:
+            if not best or len(str(r.path)) > len(str(best.path)):
+                best = r
+    return best
+
+
+def cmd_note(args):
+    cfg = load_config()
+    words = list(args.text)
+    target, repo_name = None, ""
+    if len(words) > 1 and (words[0] in cfg.clients):
+        target = words.pop(0)
+    else:
+        r = current_repo(cfg)
+        if r:
+            target, repo_name = (r.client or f"repo-{r.name}"), r.name
+    if not target:
+        target = "general"
+    text = " ".join(words).strip()
+    if not text:
+        die("usage: dot note [CLIENT] \"what happened\"")
+    NOTES.mkdir(parents=True, exist_ok=True)
+    with note_file(target).open("a") as f:
+        f.write(f"- {dt.datetime.now():%Y-%m-%d %H:%M} [{repo_name}] {text}\n")
+    where = cfg.clients[target].name if target in cfg.clients else target
+    print(f"✓ noted for {where}" + (f" ({repo_name})" if repo_name else ""))
+
+
+def cmd_notes(args):
+    cfg = load_config()
+    files = [note_file(args.client)] if args.client else sorted(NOTES.glob("*.md"))
+    for f in files:
+        if f.exists():
+            print(f"\033[1m{f.stem}\033[0m")
+            print("\n".join(f.read_text().splitlines()[-15:]))
+
+
+EXAMPLE = """# Which repo belongs to which client — used by `dot update` and `dot standup`.
+# Repos not matched by any client count as internal work: they show up in your
+# standup but never in a client update. Not committed to git.
+#
+# repos: GitHub "github.com/owner/*" patterns and/or folders ("~/Github/acme/*")
+# lang:  en, sr, bs, hr, de… · style: how the update should sound
+
+[settings]
+roots = ["~/Github"]          # where your repos live
+# emails = ["you@work.com"]   # extra commit e-mails besides `git config user.email`
+# name = "Ognjen"
+
+"""
+
+
+def cmd_clients(args):
+    cfg = load_config()
+    repos = load_repos(cfg)
+    if args.init:
+        if CONFIG.exists():
+            die(f"{CONFIG} exists — edit it with: $EDITOR {CONFIG}")
+        owners = Counter(r.remote.split("/")[1] for r in repos if r.remote.startswith("github.com/"))
+        body = EXAMPLE
+        for owner, n in owners.most_common():
+            body += (f"# [{owner}]\n# name = \"{owner}\"\n# repos = [\"github.com/{owner}/*\"]\n"
+                     f"# contact = \"\"\n# lang = \"en\"\n# style = \"friendly, short, non-technical\"\n"
+                     f"#   ({n} repo{'s' if n > 1 else ''} found)\n\n")
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG.write_text(body)
+        print(f"✓ wrote {CONFIG} — uncomment the clients you work for, then: dot clients")
+        return
+    if not CONFIG.exists():
+        print(f"No client list yet — create one with: dot clients --init")
+    for key, c in cfg.clients.items():
+        mine = [r.name for r in repos if r.client == key]
+        print(f"\033[1m{c.name}\033[0m ({key}) — {', '.join(mine) or 'no repos matched'}")
+    internal = [r.name for r in repos if not r.client]
+    if internal:
+        print(f"\033[2minternal / unassigned: {', '.join(internal)}\033[0m")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="dot", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def out_flags(sp):
+        sp.add_argument("--since", help='start of the period: "monday", "nov 1", "3 days ago"…')
+        sp.add_argument("--edit", action="store_true", help="open in $EDITOR before copying")
+        sp.add_argument("--context", action="store_true", help="show what would be sent, don't ask Claude")
+        sp.add_argument("--no-copy", action="store_true", help="don't copy to the clipboard")
+
+    s = sub.add_parser("standup")
+    s.add_argument("--week", action="store_true", help="the whole week instead of the last workday")
+    out_flags(s)
+    s.set_defaults(fn=cmd_standup)
+
+    u = sub.add_parser("update")
+    u.add_argument("client", nargs="?")
+    u.add_argument("--hours", action="store_true", help="include time spent")
+    u.add_argument("--lang", help="en, sr, bs, hr, de…")
+    out_flags(u)
+    u.set_defaults(fn=cmd_update)
+
+    n = sub.add_parser("note")
+    n.add_argument("text", nargs="+")
+    n.set_defaults(fn=cmd_note)
+
+    ns = sub.add_parser("notes")
+    ns.add_argument("client", nargs="?")
+    ns.set_defaults(fn=cmd_notes)
+
+    c = sub.add_parser("clients")
+    c.add_argument("--init", action="store_true")
+    c.set_defaults(fn=cmd_clients)
+
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

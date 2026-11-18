@@ -39,7 +39,7 @@ end
 -- end)
 
 -- Readjust font size on window resize to get rid of the padding at the bottom
-function readjust_font_size(window, pane)
+local function readjust_font_size(window, pane)
     local window_dims = window:get_dimensions()
     local pane_dims = pane:get_dimensions()
 
@@ -127,6 +127,8 @@ wezterm.on("update-right-status", function(window, _)
         end
     end
     window:set_left_status(wezterm.format(left))
+    -- agents, temperatures, RAM, containers, CI runner
+    window:set_right_status(wezterm.format(require("features").right_status()))
 end)
 
 wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_width)

@@ -15,8 +15,8 @@ run() { # label, command...
     fi
 }
 
-bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/agent-notify config/scripts/check-node-updates.sh"
-shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/bashrc"
+bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/dot-ai config/scripts/dot-fix config/scripts/dot-lobby config/scripts/dot-voice config/scripts/dot-status tests/work.sh config/scripts/agent-notify config/scripts/check-node-updates.sh"
+shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/fix.sh config/shell/lobby.sh config/shell/voice.sh config/shell/bashrc"
 
 echo "Syntax"
 for f in $bash_files $shell_files; do run "bash -n $f" bash -n "$f"; done
@@ -42,9 +42,19 @@ if [ -n "$luac" ]; then
     for f in config/wezterm/*.lua tests/nvim-smoke.lua $(find config/nvim -name '*.lua'); do
         run "$f" "$luac" -p "$f"
     done
+    # a helper used before its `local` definition compiles to a global (nil at runtime)
+    for f in config/wezterm/*.lua; do
+        stray=$("$luac" -l -p "$f" | grep -oE '[GS]ETTABUP.*_ENV "[A-Za-z_]+"' | grep -oE '"[A-Za-z_]+"' | sort -u \
+            | grep -vE '"(string|table|math|os|io|tonumber|tostring|ipairs|pairs|pcall|type|require|utf8|print|error|select|next|unpack)"' || true)
+        run "$f: no stray globals" test -z "$stray"
+        [ -n "$stray" ] && echo "      $stray"
+    done
 else
     echo "  ! luac not installed — skipped"
 fi
+
+echo "Python"
+run "dot-work parses" python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" config/scripts/dot-work
 
 echo "Config files"
 run "git config parses" git config -f config/git/config --list

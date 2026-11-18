@@ -30,6 +30,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck zsh lua5.4 python3-yaml >/dev/null
       - run: bash tests/lint.sh
+      - name: standup / client updates / subscription guard
+        run: bash tests/work.sh
       - name: WezTerm config loads (same version as the Flatpak, else nightly)
         run: |
           base=https://github.com/wez/wezterm/releases/download
