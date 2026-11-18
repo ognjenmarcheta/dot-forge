@@ -5,7 +5,7 @@
 set -uo pipefail
 DOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 S="$DOT/config/scripts"
-T="$(mktemp -d)"
+T="$(cd "$(mktemp -d)" && pwd -P)"   # physical path (macOS: /var → /private/var)
 FB="$T/fakebin"
 mkdir -p "$FB" "$T/Github"
 cd "$T" || exit 1   # never run the stand-ins inside the dotfiles repo

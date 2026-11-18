@@ -166,8 +166,8 @@ if [ -n "$client" ]; then
     step "File it under client $client"
     if command -v uv >/dev/null 2>&1; then work=(uv run --quiet --script "$SCRIPTS/dot-work")
     else work=(python3 "$SCRIPTS/dot-work"); fi
-    # shellcheck disable=SC2088  # stored as ~/… so clients.toml works on every machine
-    run "${work[@]}" clients --add "$client" "${dest/#$HOME/\~}"
+    local_tilde='~'   # stored as ~/… so clients.toml works on every machine (portable to bash 3.2)
+    run "${work[@]}" clients --add "$client" "${dest/#$HOME/$local_tilde}"
 fi
 
 printf '\n\033[1;32m✓ %s is ready\033[0m  %s\n' "$title" "$dest"

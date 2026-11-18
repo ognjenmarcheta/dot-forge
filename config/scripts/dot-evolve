@@ -240,7 +240,8 @@ def queue(rep: dict) -> None:
     if not (repo / ".git").exists():
         sys.exit(f"dot evolve: no dotfiles repo at {repo}")
     text = render(rep)
-    r = subprocess.run([str(SCRIPTS / "dot-night"), "add-json"], input=json.dumps({
+    # same Python (needs no uv)
+    r = subprocess.run([sys.executable, str(SCRIPTS / "dot-night"), "add-json"], input=json.dumps({
         "repo": str(repo), "task": TASK.format(report=text), "title": "evolve: fixes from this week's friction",
         "auto_pr": True, "kind": "evolve"}), text=True, capture_output=True)
     if r.returncode != 0:
