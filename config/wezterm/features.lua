@@ -15,6 +15,7 @@
 -- Per-machine settings (not committed): ~/.config/wezterm/machine.lua, e.g.
 --   return {
 --     persistent_sessions = false,                 -- default true
+--     wayland = true,                              -- Linux; default: XWayland
 --     project_colors = { ["kaine-forge"] = "#f5a97f" },
 --   }
 
@@ -421,6 +422,14 @@ end)
 
 function M.apply(config)
     base_colors = copy(config.colors)
+
+    -- Linux: run through XWayland, like the Flatpak build did. WezTerm
+    -- 20240203 on native GNOME Wayland can't drag the window by its tab bar
+    -- (and has known crashes with fractional scaling). `wayland = true` in
+    -- machine.lua switches back.
+    if not wezterm.target_triple:find("darwin") then
+        config.enable_wayland = machine.wayland == true
+    end
 
     -- Sessions that survive closing the window: tabs run in a background
     -- session server ("unix" domain) and the window just attaches to it.
