@@ -219,18 +219,24 @@ install_macos_packages() {
 
 apt_install() {
     # install what exists in this Ubuntu/Debian release, skip the rest
+    # (--upgrade: also upgrade the ones already installed — only these, not the whole system)
     local pkg
     local missing=""
+    local present=""
     for pkg in "$@"; do
         if apt-cache show "$pkg" >/dev/null 2>&1; then
-            dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+            if dpkg -s "$pkg" >/dev/null 2>&1; then present="$present $pkg"; else missing="$missing $pkg"; fi
         else
             warn "apt has no package '$pkg' here — skipped"
         fi
     done
     if [ -n "$missing" ]; then
         # shellcheck disable=SC2086
-        sudo apt-get install -y $missing
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $missing
+    fi
+    if [ "$UPGRADE" -eq 1 ] && [ -n "$present" ]; then
+        # shellcheck disable=SC2086
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y $present || warn "apt upgrade had problems"
     fi
 }
 
@@ -245,7 +251,6 @@ install_linux_packages() {
         ripgrep fd-find jq btop lazygit fastfetch thefuck \
         ffmpegthumbnailer poppler-utils imagemagick 7zip \
         wl-clipboard libnotify-bin duf
-    if [ "$UPGRADE" -eq 1 ]; then sudo apt-get upgrade -y || warn "apt upgrade had problems"; fi
     have node || apt_install nodejs npm    # Mason language servers, Copilot, mcphub
     if have fdfind && ! have fd; then ln -sf "$(command -v fdfind)" "$BIN/fd"; ok "fd -> fdfind"; fi
 

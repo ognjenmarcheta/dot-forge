@@ -48,12 +48,15 @@ jobs:
       - name: install.sh
         run: ./install.sh
       - name: Doctor + Neovim smoke test
+        timeout-minutes: 5
         run: bash tests/doctor.sh --nvim
       - name: Re-running install.sh changes nothing
+        timeout-minutes: 10
         run: |
           ./install.sh --no-nvim
           if [ -d "$HOME/.dotfiles-backup" ]; then
             echo "::error::second run moved configs to a backup:"; ls -R "$HOME/.dotfiles-backup"; exit 1
           fi
       - name: --upgrade works
+        timeout-minutes: 15
         run: ./install.sh --upgrade --no-nvim
