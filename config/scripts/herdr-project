@@ -1,0 +1,99 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+_usage() {
+  print "Usage: herdr [path]"
+  print "       h [path]"
+  print "       herdr-project --print [--json] [path]"
+  print
+  print "Open the Herdr session for the current repo/folder."
+  print "Use 'command herdr ...' to bypass the shell wrapper."
+}
+
+_is_passthrough() {
+  case "$1" in
+    -h|--help|-V|--version|--default-config|--no-session|--session|--remote|--remote-keybindings|--handoff)
+      return 0
+      ;;
+    status|update|server|config|workspace|worktree|tab|agent|pane|wait|session|integration)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+if ! command -v herdr >/dev/null 2>&1; then
+  print -u2 "herdr-project: herdr is not installed or not on PATH"
+  exit 127
+fi
+
+if (( $# > 0 )) && [[ "$1" == "--print" ]]; then
+  shift
+  output_format="text"
+  if (( $# > 0 )) && [[ "$1" == "--json" ]]; then
+    output_format="json"
+    shift
+  fi
+
+  if (( $# == 0 )); then
+    target="$PWD"
+  elif (( $# == 1 )) && [[ -d "$1" ]]; then
+    target="$1"
+  else
+    _usage
+    exit 2
+  fi
+
+  if ! herdr_resolve_project "$target"; then
+    print -u2 "herdr-project: unable to resolve directory: $target"
+    exit 2
+  fi
+
+  running=false
+  if herdr_session_running "$HP_SESSION"; then
+    running=true
+  fi
+
+  if [[ "$output_format" == "json" ]]; then
+    jq -n \
+      --arg root "$HP_ROOT" \
+      --arg session "$HP_SESSION" \
+      --arg session_dir "$HP_SESSION_DIR" \
+      --arg socket_path "$HP_SOCKET_PATH" \
+      --argjson running "$running" \
+      '{root:$root, session:$session, session_dir:$session_dir, socket_path:$socket_path, running:$running}'
+  else
+    print "root=$HP_ROOT"
+    print "session=$HP_SESSION"
+    print "session_dir=$HP_SESSION_DIR"
+    print "socket_path=$HP_SOCKET_PATH"
+    print "running=$running"
+  fi
+  exit 0
+fi
+
+if (( $# > 0 )) && _is_passthrough "$1"; then
+  exec herdr "$@"
+fi
+
+if (( $# == 0 )); then
+  target="$PWD"
+elif (( $# == 1 )) && [[ -d "$1" ]]; then
+  target="$1"
+else
+  exec herdr "$@"
+fi
+
+if ! herdr_resolve_project "$target"; then
+  print -u2 "herdr-project: unable to resolve directory: $target"
+  exit 2
+fi
+
+cd "$HP_ROOT" || exit 2
+exec herdr --session "$HP_SESSION"

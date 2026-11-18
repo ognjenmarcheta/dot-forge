@@ -1,0 +1,208 @@
+format = """
+[](#9A348E)\
+$os\
+${custom.user_placeholder}\
+[](bg:#DA627D fg:#9A348E)\
+${custom.dir_placeholder}\
+[](fg:#FF6900 bg:#FFFFFF)\
+$c\
+$elixir\
+$elm\
+$golang\
+$gradle\
+$haskell\
+$java\
+$julia\
+$nodejs\
+${custom.node_edit}\
+$nim\
+$rust\
+$scala\
+[](fg:#FFFFFF bg:#06969A)\
+$docker_context\
+[ ](fg:#FFFFFF)\
+"""
+
+right_format = """
+[](fg:#DA627D bg:#FF6900)\
+${custom.git_link_start}\
+$git_branch\
+${custom.git_link_end}\
+$git_status\
+$git_metrics\
+[](fg:#FFFFFF bg:#33658A)\
+$time\
+"""
+
+# Disable the blank line at the start of the prompt
+# add_newline = false
+
+# You can also replace your username with a neat symbol like   or disable this
+# and use the os module below
+[username]
+show_always = true
+style_user = "bg:#9A348E fg:#FFFFFF"
+style_root = "bg:#9A348E fg:#FFFFFF"
+format = '[$user ]($style)'
+disabled = false
+
+# An alternative to the username module which displays a symbol that
+# represents the current operating system
+[os]
+style = "bg:#9A348E"
+disabled = true # Disabled by default
+
+[directory]
+style = "bg:#DA627D fg:#FFFFFF"
+format = "[ $path ]($style)"
+truncation_length = 3
+truncation_symbol = "…/"
+
+# Here is how you can shorten some long paths by text replacement
+# similar to mapped_locations in Oh My Posh:
+[directory.substitutions]
+"Documents" = "󰈙 "
+"Downloads" = " "
+"Music" = " "
+"Pictures" = " "
+# Keep in mind that the order matters. For example:
+# "Important Documents" = " 󰈙 "
+# will not be replaced, because "Documents" was already substituted before.
+# So either put "Important Documents" before "Documents" or use the substituted version:
+# "Important 󰈙 " = " 󰈙 "
+
+[c]
+symbol = " "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[docker_context]
+symbol = " "
+style = "bg:#06969A"
+format = '[ $symbol $context ]($style)'
+
+[elixir]
+symbol = " "
+style = "bg:#FFFFFF"
+format = '[ $symbol ($version) ]($style)'
+
+[elm]
+symbol = " "
+style = "bg:#FFFFFF"
+format = '[ $symbol ($version) ]($style)'
+
+[git_branch]
+symbol = ""
+style = "bg:#FF6900 fg:#FFFFFF"
+format = '[ $symbol $branch ]($style)'
+
+[git_status]
+style = "bg:#FF6900 fg:#FFFFFF"
+format = '[$all_status$ahead_behind ]($style)'
+ahead = "⇡"
+behind = "⇣"
+diverged = "⇕"
+stashed = "*"
+conflicted = "="
+deleted = "✘"
+renamed = "»"
+modified = "!"
+staged = "+"
+untracked = "?"
+up_to_date = ""
+
+[git_metrics]
+disabled = false
+only_nonzero_diffs = true
+format = '([ +$added ](bg:#FFFFFF fg:#1C7C54))([ -$deleted ](bg:#FFFFFF fg:#C0392B))'
+
+[golang]
+symbol = " "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[gradle]
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[haskell]
+symbol = " "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[java]
+symbol = " "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[julia]
+symbol = " "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[nodejs]
+symbol = ""
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+# Custom module: clickable nvim icon next to Node.js version
+# Only appears in Node.js projects; placeholder replaced by _clickable_prompt_precmd
+[custom.node_edit]
+command = 'echo -n "__CLICKNODEEDIT__"'
+when = "test -f package.json || test -d node_modules"
+shell = ["bash"]
+style = "bg:#FFFFFF fg:#000000"
+format = '[$output ]($style)'
+
+[nim]
+symbol = "󰆥 "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[rust]
+symbol = ""
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[scala]
+symbol = " "
+style = "bg:#FFFFFF fg:#000000"
+format = '[ $symbol ($version) ]($style)'
+
+[time]
+disabled = false
+time_format = "%R" # Hour:Minute Format
+style = "bg:#33658A fg:#FFFFFF"
+format = '[ ♥ $time ]($style)'
+
+# Custom module: placeholder for clickable username → GitHub profile
+# The actual OSC 8 hyperlink is injected by _clickable_prompt_precmd in .zshrc
+[custom.user_placeholder]
+command = 'echo -n "__CLICKUSER__"'
+when = "true"
+shell = ["bash"]
+style = "bg:#9A348E fg:#FFFFFF"
+format = '[$output ]($style)'
+
+# Custom module: placeholder for clickable directory breadcrumbs
+# The actual OSC 8 hyperlinks are injected by _clickable_prompt_precmd in .zshrc
+[custom.dir_placeholder]
+command = 'echo -n "__CLICKDIR__"'
+when = "true"
+shell = ["bash"]
+style = "bg:#DA627D fg:#FFFFFF"
+format = '[ $output ]($style)'
+
+# Custom modules for clickable git branch (opens GitHub repo/branch page)
+# Placeholders are replaced with OSC 8 hyperlinks by _clickable_prompt_precmd in .zshrc
+[custom.git_link_start]
+command = 'echo -n "__CLICKGIT_START__"'
+when = "git rev-parse --git-dir 2>/dev/null"
+shell = ["bash"]
+format = '$output'
+
+[custom.git_link_end]
+command = 'echo -n "__CLICKGIT_END__"'
+when = "git rev-parse --git-dir 2>/dev/null"
+shell = ["bash"]
+format = '$output'

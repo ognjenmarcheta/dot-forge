@@ -1,0 +1,38 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+if ! herdr_resolve_project "${1:-$PWD}"; then
+  print -u2 "hdelete: unable to resolve current project"
+  exit 2
+fi
+
+print "This will delete the Herdr session for:"
+print "  root:    $HP_ROOT"
+print "  session: $HP_SESSION"
+print "  dir:     $HP_SESSION_DIR"
+print
+print -n "Type 'delete $HP_SESSION' to confirm: "
+read -r confirmation
+
+if [[ "$confirmation" != "delete $HP_SESSION" ]]; then
+  print "Cancelled."
+  exit 1
+fi
+
+if herdr_session_running "$HP_SESSION"; then
+  command herdr session stop "$HP_SESSION" --json >/dev/null 2>&1 || true
+fi
+
+command herdr session delete "$HP_SESSION" --json
+delete_status=$?
+
+if (( delete_status == 0 )); then
+  herdr_forget_project_root "$HP_ROOT"
+fi
+
+exit "$delete_status"

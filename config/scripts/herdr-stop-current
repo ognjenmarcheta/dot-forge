@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+if ! herdr_resolve_project "${1:-$PWD}"; then
+  print -u2 "hstop: unable to resolve current project"
+  exit 2
+fi
+
+if ! herdr_session_running "$HP_SESSION"; then
+  print "Herdr session '$HP_SESSION' is not running."
+  exit 0
+fi
+
+print "Stopping Herdr session '$HP_SESSION' for $HP_ROOT"
+command herdr session stop "$HP_SESSION" --json

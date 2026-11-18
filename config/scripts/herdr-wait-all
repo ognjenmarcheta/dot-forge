@@ -1,0 +1,80 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+timeout_seconds=0
+interval_seconds=5
+once=false
+
+while (( $# > 0 )); do
+  case "$1" in
+    --timeout)
+      timeout_seconds="$2"
+      shift 2
+      ;;
+    --interval)
+      interval_seconds="$2"
+      shift 2
+      ;;
+    --once)
+      once=true
+      shift
+      ;;
+    -h|--help)
+      print "Usage: hwait-all [--timeout seconds] [--interval seconds] [--once]"
+      exit 0
+      ;;
+    *)
+      print -u2 "hwait-all: unknown argument: $1"
+      exit 2
+      ;;
+  esac
+done
+
+if ! herdr_resolve_project "$PWD"; then
+  print -u2 "hwait-all: unable to resolve current project"
+  exit 2
+fi
+
+start_epoch="$(date +%s)"
+
+while true; do
+  agents_json="$(command herdr --session "$HP_SESSION" agent list 2>/dev/null)"
+  if (( $? != 0 )); then
+    print -u2 "hwait-all: unable to list agents for session $HP_SESSION"
+    exit 1
+  fi
+
+  summary="$(print -r -- "$agents_json" | jq -r '
+    [.result.agents[]?.agent_status]
+    | if length == 0 then "agents=0"
+      else sort | group_by(.) | map("\(.[0])=\(length)") | join(" ")
+      end
+  ')"
+  working="$(print -r -- "$agents_json" | jq -r '[.result.agents[]? | select(.agent_status == "working")] | length')"
+
+  print "[$HP_SESSION] $summary"
+
+  if (( working == 0 )); then
+    herdr_notify "Herdr: $HP_SESSION" "No agents are working" "$summary"
+    exit 0
+  fi
+
+  if [[ "$once" == true ]]; then
+    exit 0
+  fi
+
+  if (( timeout_seconds > 0 )); then
+    now="$(date +%s)"
+    if (( now - start_epoch >= timeout_seconds )); then
+      print -u2 "hwait-all: timeout after ${timeout_seconds}s"
+      exit 124
+    fi
+  fi
+
+  sleep "$interval_seconds"
+done

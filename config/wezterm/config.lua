@@ -1,0 +1,252 @@
+local wezterm = require("wezterm")
+local config = {}
+
+if wezterm.config_builder then
+    config = wezterm.config_builder()
+end
+
+config = {
+    default_cursor_style = "BlinkingBlock",
+    automatically_reload_config = true,
+    window_close_confirmation = "NeverPrompt",
+    adjust_window_size_when_changing_font_size = false,
+    window_decorations = "RESIZE", -- Linux override further down
+    tab_bar_at_bottom = true,
+    tab_and_split_indices_are_zero_based = true,
+    hide_tab_bar_if_only_one_tab = false,
+    check_for_updates = false,
+    use_fancy_tab_bar = false,
+    font_size = 12.5,
+    font = wezterm.font("JetBrains Mono", { weight = "Bold" }),
+    enable_tab_bar = true,
+    tab_max_width = 28,
+    window_padding = {
+        left = 8,
+        right = 8,
+        top = 8,
+        bottom = 8,
+    },
+    background = {
+        {
+            source = {
+                -- Portable: resolves to ~/.config/wezterm on Linux and macOS
+                File = wezterm.config_dir .. "/bg-monterey.jpg",
+            },
+            hsb = {
+                hue = 1.0,
+                saturation = 1.02,
+                brightness = 0.25,
+            },
+            -- attachment = { Parallax = 0.3 },
+            -- width = "100%",
+            -- height = "100%",
+        },
+        {
+            source = {
+                Color = "#282c35",
+            },
+            width = "100%",
+            height = "100%",
+            opacity = 0.55,
+        },
+    },
+    -- from: https://akos.ma/blog/adopting-wezterm/
+    hyperlink_rules = {
+        -- Matches: a URL in parens: (URL)
+        {
+            regex = "\\((\\w+://\\S+)\\)",
+            format = "$1",
+            highlight = 1,
+        },
+        -- Matches: a URL in brackets: [URL]
+        {
+            regex = "\\[(\\w+://\\S+)\\]",
+            format = "$1",
+            highlight = 1,
+        },
+        -- Matches: a URL in curly braces: {URL}
+        {
+            regex = "\\{(\\w+://\\S+)\\}",
+            format = "$1",
+            highlight = 1,
+        },
+        -- Matches: a URL in angle brackets: <URL>
+        {
+            regex = "<(\\w+://\\S+)>",
+            format = "$1",
+            highlight = 1,
+        },
+        -- Then handle URLs not wrapped in brackets
+        {
+            -- Before
+            --regex = '\\b\\w+://\\S+[)/a-zA-Z0-9-]+',
+            --format = '$0',
+            -- After
+            regex = "[^(]\\b(\\w+://\\S+[)/a-zA-Z0-9-]+)",
+            format = "$1",
+            highlight = 1,
+        },
+        -- implicit mailto link
+        {
+            regex = "\\b\\w+@[\\w-]+(\\.[\\w-]+)+\\b",
+            format = "mailto:$0",
+        },
+    },
+    colors = {
+        tab_bar = {
+            background = "#1f2330",
+            active_tab = {
+                bg_color = "#b7bdf8",
+                fg_color = "#1e2030",
+                intensity = "Bold",
+            },
+            inactive_tab = {
+                bg_color = "#363a4f",
+                fg_color = "#cad3f5",
+            },
+            inactive_tab_hover = {
+                bg_color = "#494d64",
+                fg_color = "#cad3f5",
+            },
+            new_tab = {
+                bg_color = "#1f2330",
+                fg_color = "#cad3f5",
+            },
+            new_tab_hover = {
+                bg_color = "#494d64",
+                fg_color = "#cad3f5",
+                intensity = "Bold",
+            },
+        },
+    },
+}
+
+-- Linux (GNOME Wayland): turn the tab bar into a title bar.
+-- It sits at the top, shows the window title + min/max/close buttons, and
+-- click-and-hold on any empty part of it drags the window. Double-click
+-- maximizes. macOS keeps the original borderless/bottom-tab-bar layout.
+if not wezterm.target_triple:find("darwin") then
+    config.window_decorations = "INTEGRATED_BUTTONS|RESIZE"
+    config.integrated_title_button_style = "Gnome"
+    config.integrated_title_buttons = { "Hide", "Maximize", "Close" }
+    config.integrated_title_button_alignment = "Right"
+    config.tab_bar_at_bottom = false
+    config.colors.tab_bar.background = "#1f2330"
+
+    -- Start the shell with ~/.config/shell setup (starship clickable prompt,
+    -- clickable ls/ll, zoxide `z`). Your own ~/.bashrc / ~/.zshrc still load first.
+    local home = wezterm.home_dir
+    local login_shell = os.getenv("SHELL") or ""
+    if login_shell:find("zsh") then
+        config.default_prog = { login_shell, "-l" }
+        config.set_environment_variables = { ZDOTDIR = home .. "/.config/shell/zsh" }
+    else
+        config.default_prog = { "bash", "--rcfile", home .. "/.config/shell/bashrc", "-i" }
+    end
+end
+
+-- tmux
+config.leader = { key = "q", mods = "ALT", timeout_milliseconds = 2000 }
+config.keys = {
+    {
+        mods = "LEADER",
+        key = "c",
+        action = wezterm.action.SpawnTab "CurrentPaneDomain",
+    },
+    {
+        mods = "LEADER",
+        key = "x",
+        action = wezterm.action.CloseCurrentPane { confirm = true }
+    },
+    {
+        mods = "LEADER",
+        key = "b",
+        action = wezterm.action.ActivateTabRelative(-1)
+    },
+    {
+        mods = "LEADER",
+        key = "n",
+        action = wezterm.action.ActivateTabRelative(1)
+    },
+    {
+        mods = "LEADER",
+        key = "|",
+        action = wezterm.action.SplitHorizontal { domain = "CurrentPaneDomain" }
+    },
+    {
+        mods = "LEADER",
+        key = "-",
+        action = wezterm.action.SplitVertical { domain = "CurrentPaneDomain" }
+    },
+    {
+        mods = "LEADER",
+        key = "h",
+        action = wezterm.action.ActivatePaneDirection "Left"
+    },
+    {
+        mods = "LEADER",
+        key = "j",
+        action = wezterm.action.ActivatePaneDirection "Down"
+    },
+    {
+        mods = "LEADER",
+        key = "k",
+        action = wezterm.action.ActivatePaneDirection "Up"
+    },
+    {
+        mods = "LEADER",
+        key = "l",
+        action = wezterm.action.ActivatePaneDirection "Right"
+    },
+    {
+        mods = "LEADER",
+        key = "LeftArrow",
+        action = wezterm.action.AdjustPaneSize { "Left", 5 }
+    },
+    {
+        mods = "LEADER",
+        key = "RightArrow",
+        action = wezterm.action.AdjustPaneSize { "Right", 5 }
+    },
+    {
+        mods = "LEADER",
+        key = "DownArrow",
+        action = wezterm.action.AdjustPaneSize { "Down", 5 }
+    },
+    {
+        mods = "LEADER",
+        key = "UpArrow",
+        action = wezterm.action.AdjustPaneSize { "Up", 5 }
+    },
+}
+
+for i = 0, 9 do
+    -- leader + number to activate that tab
+    table.insert(config.keys, {
+        key = tostring(i),
+        mods = "LEADER",
+        action = wezterm.action.ActivateTab(i),
+    })
+end
+
+-- Hyperlinks still open on click; selection is not auto-copied on mouse-up.
+-- Copy with Cmd+C (macOS) / Ctrl+Shift+C or Super+C (Linux) after a deliberate
+-- drag-select instead. On Linux this also means the PRIMARY selection is not
+-- filled on drag, so middle-click paste won't pick up terminal selections.
+-- (WezTerm has no copy_on_select option; auto-copy comes from CompleteSelection
+-- mouse bindings, which we deliberately do not use here.)
+config.mouse_bindings = {
+    {
+        event = { Up = { streak = 1, button = "Left" } },
+        mods = "NONE",
+        action = wezterm.action.OpenLinkAtMouseCursor,
+    },
+    {
+        event = { Up = { streak = 1, button = "Left" } },
+        mods = "NONE",
+        action = wezterm.action.OpenLinkAtMouseCursor,
+        mouse_reporting = true,
+    },
+}
+
+return config

@@ -1,0 +1,69 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+_usage() {
+  print "Usage: hwt list [--json]"
+  print "       hwt create <branch> [--base REF] [--json]"
+  print "       hwt open <branch-or-path> [--json]"
+  print "       hwt remove <workspace-id> [--force] [--json]"
+}
+
+if ! herdr_resolve_project "$PWD"; then
+  print -u2 "hwt: unable to resolve current project"
+  exit 2
+fi
+
+cmd="${1:-list}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+  -h|--help|help)
+    _usage
+    ;;
+  list)
+    exec herdr --session "$HP_SESSION" worktree list --cwd "$HP_ROOT" "$@"
+    ;;
+  create)
+    if (( $# == 0 )) || [[ "$1" == --* ]]; then
+      exec herdr --session "$HP_SESSION" worktree create --cwd "$HP_ROOT" --focus "$@"
+    fi
+
+    branch="$1"
+    shift
+    exec herdr --session "$HP_SESSION" worktree create --cwd "$HP_ROOT" --branch "$branch" --focus "$@"
+    ;;
+  open)
+    if (( $# == 0 )); then
+      _usage
+      exit 2
+    fi
+
+    target="$1"
+    shift
+    if [[ -d "$target" || "$target" == /* || "$target" == ./* || "$target" == ../* ]]; then
+      exec herdr --session "$HP_SESSION" worktree open --cwd "$HP_ROOT" --path "$target" --focus "$@"
+    fi
+
+    exec herdr --session "$HP_SESSION" worktree open --cwd "$HP_ROOT" --branch "$target" --focus "$@"
+    ;;
+  remove)
+    if (( $# == 0 )); then
+      _usage
+      exit 2
+    fi
+
+    workspace="$1"
+    shift
+    exec herdr --session "$HP_SESSION" worktree remove --workspace "$workspace" "$@"
+    ;;
+  *)
+    print -u2 "hwt: unknown command: $cmd"
+    _usage
+    exit 2
+    ;;
+esac

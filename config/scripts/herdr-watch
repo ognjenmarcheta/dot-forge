@@ -1,0 +1,219 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+timeout_seconds=0
+dry_run=false
+statuses=(blocked done)
+
+while (( $# > 0 )); do
+  case "$1" in
+    --timeout)
+      timeout_seconds="$2"
+      shift 2
+      ;;
+    --status)
+      statuses+=("$2")
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    -h|--help)
+      print "Usage: hwatch [--dry-run] [--timeout seconds] [--status status]"
+      print
+      print "Watches current Herdr session agent status events and sends macOS notifications."
+      exit 0
+      ;;
+    *)
+      print -u2 "hwatch: unknown argument: $1"
+      exit 2
+      ;;
+  esac
+done
+
+if ! herdr_resolve_project "$PWD"; then
+  print -u2 "hwatch: unable to resolve current project"
+  exit 2
+fi
+
+if [[ ! -S "$HP_SOCKET_PATH" ]]; then
+  command herdr --session "$HP_SESSION" workspace list >/dev/null 2>&1 || true
+fi
+
+if [[ ! -S "$HP_SOCKET_PATH" ]]; then
+  print -u2 "hwatch: session '$HP_SESSION' is not running and no socket exists at $HP_SOCKET_PATH"
+  exit 1
+fi
+
+python3 - "$HP_SOCKET_PATH" "$HP_SESSION" "$timeout_seconds" "$dry_run" "${statuses[@]}" <<'PY'
+import json
+import os
+import select
+import socket
+import subprocess
+import shutil
+import sys
+import time
+
+socket_path, session, timeout_seconds, dry_run, *statuses = sys.argv[1:]
+timeout_seconds = int(timeout_seconds)
+dry_run = dry_run == "true"
+statuses = list(dict.fromkeys(statuses or ["blocked", "done"]))
+
+def notify(title, subtitle, message):
+    if subprocess.call(["/usr/bin/env", "bash", "-lc", "command -v terminal-notifier >/dev/null"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        subprocess.run(["terminal-notifier", "-title", title, "-subtitle", subtitle, "-message", message], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif shutil.which("notify-send"):
+        # Linux (GNOME): desktop notification
+        body = f"{subtitle}: {message}" if subtitle else message
+        subprocess.run(["notify-send", "--app-name=herdr", title, body], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        script = f'display notification "{message.replace(chr(34), chr(92) + chr(34))}" with title "{title.replace(chr(34), chr(92) + chr(34))}"'
+        subprocess.run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def send_request(conn, req_id, method, params=None):
+    payload = {"id": req_id, "method": method, "params": params or {}}
+    conn.sendall((json.dumps(payload) + "\n").encode())
+
+def read_line(fileobj, timeout=None):
+    if timeout is not None:
+        ready, _, _ = select.select([fileobj], [], [], timeout)
+        if not ready:
+            return None
+    return fileobj.readline()
+
+def list_panes():
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.connect(socket_path)
+    f = c.makefile("r", encoding="utf-8")
+    send_request(c, "pane_list", "pane.list")
+    line = read_line(f, 5)
+    c.close()
+    if not line:
+        return []
+    response = json.loads(line)
+    if "error" in response:
+        return []
+    return response.get("result", {}).get("panes", [])
+
+def event_status(obj):
+    if isinstance(obj, dict):
+        for key in ("agent_status", "status", "state"):
+            value = obj.get(key)
+            if isinstance(value, str) and value in statuses:
+                return value
+        for value in obj.values():
+            found = event_status(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = event_status(value)
+            if found:
+                return found
+    return None
+
+def event_field(obj, names):
+    if isinstance(obj, dict):
+        for name in names:
+            value = obj.get(name)
+            if isinstance(value, str):
+                return value
+        for value in obj.values():
+            found = event_field(value, names)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = event_field(value, names)
+            if found:
+                return found
+    return None
+
+panes = list_panes()
+subscriptions = [{"type": "workspace.created"}, {"type": "workspace.updated"}, {"type": "workspace.focused"}]
+for pane in panes:
+    pane_id = pane.get("pane_id")
+    if not pane_id:
+        continue
+    for status in statuses:
+        subscriptions.append({"type": "pane.agent_status_changed", "pane_id": pane_id, "agent_status": status})
+
+if dry_run:
+    print(json.dumps({
+        "session": session,
+        "socket_path": socket_path,
+        "pane_count": len(panes),
+        "subscriptions": subscriptions,
+    }, indent=2))
+    sys.exit(0)
+
+conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+conn.connect(socket_path)
+fileobj = conn.makefile("r", encoding="utf-8")
+send_request(conn, "events", "events.subscribe", {"subscriptions": subscriptions})
+line = read_line(fileobj, 5)
+if not line:
+    print("hwatch: no subscription acknowledgement", file=sys.stderr)
+    sys.exit(1)
+
+ack = json.loads(line)
+if "error" in ack:
+    print(f"hwatch: {ack['error'].get('message', ack['error'])}", file=sys.stderr)
+    sys.exit(1)
+
+print(f"hwatch: watching session {session} ({len(panes)} panes)")
+deadline = time.time() + timeout_seconds if timeout_seconds > 0 else None
+last = {}
+
+def emit(status, pane, agent, message):
+    stamp = time.strftime("%H:%M:%S")
+    print(f"{stamp} {session} {pane or '-'} {agent} {status or 'event'} {message}")
+
+    if status in statuses:
+        key = (pane, agent, status)
+        if last.get(key) != message:
+            notify(f"Herdr: {session}", status, f"{agent} {status}: {message}")
+            last[key] = message
+
+def poll_current_panes():
+    for pane in list_panes():
+        status = pane.get("agent_status")
+        if status not in statuses:
+            continue
+        pane_id = pane.get("pane_id")
+        agent = pane.get("agent") or "agent"
+        message = pane.get("custom_status") or pane.get("foreground_cwd") or pane.get("cwd") or "status changed"
+        emit(status, pane_id, agent, message)
+
+while True:
+    wait = 5
+    if deadline is not None:
+        wait = min(wait, max(0, deadline - time.time()))
+        if wait == 0:
+            sys.exit(0)
+
+    line = read_line(fileobj, wait)
+    if not line:
+        poll_current_panes()
+        continue
+
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    status = event_status(event)
+    pane = event_field(event, ["pane_id", "pane"])
+    agent = event_field(event, ["agent", "display_agent"]) or "agent"
+    message = event_field(event, ["message", "custom_status"]) or json.dumps(event, separators=(",", ":"))[:180]
+    emit(status, pane, agent, message)
+    if not status:
+        poll_current_panes()
+PY
