@@ -1,0 +1,54 @@
+# `dot new` against the real Kaine Forge template: copy, pnpm install, template
+# adoption, AI setup, doctor, commit through the template's own hooks
+# (commitlint rejects AI attribution). Local mode: no GitHub repo is created.
+# Weekly, so template changes that break `dot new` show up before you need it.
+name: dot new
+
+on:
+  pull_request:
+    paths: [config/scripts/dot-new, config/scripts/dot-work, .github/workflows/new-project.yml]
+  push:
+    branches: [main]
+    paths: [config/scripts/dot-new, config/scripts/dot-work, .github/workflows/new-project.yml]
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * 1"
+
+concurrency:
+  group: new-project-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kaine-forge:
+    runs-on: ${{ fromJSON(github.event.repository.visibility == 'private' && vars.CI_SELF_HOSTED_LINUX == 'true' && fromJSON(vars.CI_SELF_HOSTED_LINUX) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","linux","x64","kaine-ci-linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - uses: astral-sh/setup-uv@v6
+      - name: Fresh home folder
+        run: |
+          mkdir -p "$RUNNER_TEMP/home/Github"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/home/.config" >> "$GITHUB_ENV"
+          git config --global user.name "dot new CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+      - name: dot new demo --local --client acme
+        run: bash config/scripts/dot-new demo --local --yes --client acme --title "Demo Portal"
+      - name: Adopted, committed, filed under the client
+        run: |
+          cd "$HOME/Github/demo"
+          git log --format='%s%n%b' -1 | tee /dev/stderr | grep -q '^chore: adopt Kaine Forge template as Demo Portal'
+          ! git log --format=%B | grep -qiE 'co-authored-by|generated with'
+          test -z "$(git status --porcelain)"
+          test -f .ai/project/template.json
+          test ! -f template-adoption.json
+          grep -q '"productName": *"Demo Portal"' .ai/project/template.json
+          grep -q 'Github/demo' "$XDG_CONFIG_HOME/dotfiles/clients.toml"

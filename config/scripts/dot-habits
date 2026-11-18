@@ -1,0 +1,231 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot habits — turn the long commands you keep typing into shortcuts.
+
+Looks at the last 30 days of shell history (atuin) for long commands you
+repeat, or long beginnings you keep typing with different endings, and offers
+each as an alias (or a navi recipe). Accepted ones go into the dotfiles repo:
+config/shell/habits.sh (aliases) and config/navi/cheats/habits.cheat — `dot save`
+to keep them. Names come from Claude (fast model, your subscription via dot-ai)
+when available, otherwise from the initials.
+
+  dot habits           go through the suggestions (y / n / r = navi recipe / e = rename / s = never)
+  dot habits --check   just print how many new suggestions there are
+  dot habits --list    show the shortcuts you already accepted
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share")) / "dotfiles"
+IGNORE = DATA / "habits-ignore"
+SCRIPTS = Path(__file__).resolve().parent
+SHELL_DIR = (HOME / ".config" / "shell").resolve()       # the repo's config/shell (symlink)
+HABITS = SHELL_DIR / "habits.sh"
+NAVI = (HOME / ".config" / "navi").resolve() / "cheats" / "habits.cheat"
+MIN_LEN = 22          # shorter commands aren't worth an alias
+MIN_EXACT = 6         # the same command this often in 30 days
+MIN_PREFIX_USES = 10  # a beginning typed this often (with different endings)
+SECRET = re.compile(r"(token|secret|password|passwd|api[_-]?key|authorization|bearer |ghp_|sk-ant-|AKIA|://[^/\s]+:[^@\s]+@)", re.I)
+SKIP_START = ("cd ", "z ", "ai ", "dot ", "y ", "nvim ", "vim ", "echo ", "export ", "#", "sudo rm", "rm ")
+
+
+def history(days: int = 30) -> list[str]:
+    if os.environ.get("DOT_HABITS_FROM"):            # tests: "time<TAB>exit<TAB>command" lines
+        out = Path(os.environ["DOT_HABITS_FROM"]).read_text()
+    else:
+        if not shutil.which("atuin"):
+            sys.exit("dot habits: needs atuin")
+        env = {**os.environ}
+        env.setdefault("ATUIN_SESSION", subprocess.run(["atuin", "uuid"], capture_output=True, text=True).stdout.strip() or "x")
+        out = subprocess.run(["atuin", "history", "list", "--format", "{time}\t{exit}\t{command}"],
+                             capture_output=True, text=True, env=env).stdout
+    since = dt.datetime.now() - dt.timedelta(days=days)
+    cmds = []
+    for line in out.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        try:
+            if dt.datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S") < since:
+                continue
+        except ValueError:
+            continue
+        if parts[1] not in ("0", ""):       # only commands that worked
+            continue
+        c = " ".join(parts[2].split())
+        if len(c) < MIN_LEN or c.startswith(SKIP_START) or SECRET.search(c) or "\n" in parts[2]:
+            continue
+        cmds.append(c)
+    return cmds
+
+
+def existing() -> tuple[set[str], set[str]]:
+    """(alias names, alias bodies) already defined in the dotfiles."""
+    names, bodies = set(), set()
+    for f in SHELL_DIR.glob("*.sh"):
+        for m in re.finditer(r"^\s*alias\s+([\w.-]+)=(['\"])(.*?)\2", f.read_text(errors="ignore"), re.M):
+            names.add(m.group(1))
+            bodies.add(m.group(3))
+    return names, bodies
+
+
+def ignored() -> set[str]:
+    return set(IGNORE.read_text().splitlines()) if IGNORE.exists() else set()
+
+
+def suggestions() -> list[dict]:
+    cmds = history()
+    exact = Counter(cmds)
+    names, bodies = existing()
+    skip = ignored() | bodies
+
+    def covered(c: str) -> bool:
+        """already a shortcut, part of one, or starts with one"""
+        return any(c == b or c.startswith(b + " ") or b.startswith(c + " ") for b in skip)
+
+    found: dict[str, dict] = {}
+    for c, n in exact.items():
+        if n >= MIN_EXACT and not covered(c):
+            found[c] = {"cmd": c, "uses": n, "kind": "exact"}
+    # beginnings: same first 2–4 words, different endings
+    by_prefix: dict[str, list[str]] = defaultdict(list)
+    for c in cmds:
+        words = c.split()
+        for k in (4, 3, 2):
+            if len(words) > k:
+                by_prefix[" ".join(words[:k])].append(c)
+    for prefix, uses in sorted(by_prefix.items(), key=lambda kv: -len(kv[0])):
+        if len(prefix) < MIN_LEN - 4 or len(uses) < MIN_PREFIX_USES or len(set(uses)) < 3:
+            continue
+        if covered(prefix) or any(f["cmd"].startswith(prefix) and f["kind"] == "prefix" for f in found.values()):
+            continue
+        found[prefix] = {"cmd": prefix, "uses": len(uses), "kind": "prefix"}
+    out = sorted(found.values(), key=lambda f: -(len(f["cmd"]) * f["uses"]))[:12]
+    for f in out:
+        f["saves"] = (len(f["cmd"]) - 5) * f["uses"]
+    return out
+
+
+def name_them(items: list[dict]) -> None:
+    taken, _ = existing()
+    ai = SCRIPTS / "dot-ai"
+    names: list[str] = []
+    if items and ai.exists():
+        prompt = ("Suggest a short, memorable shell alias name for each command below: 2–6 lowercase "
+                  "letters/digits, easy to type, no existing common command names. Reply with JSON only: "
+                  "a list of names in the same order.")
+        r = subprocess.run([str(ai), "--fast", prompt], input="\n".join(f["cmd"] for f in items),
+                           capture_output=True, text=True)
+        try:
+            names = json.loads(re.sub(r"^```\w*|```$", "", r.stdout.strip(), flags=re.M))
+        except (json.JSONDecodeError, TypeError):
+            names = []
+        if not isinstance(names, list):
+            names = []
+    for i, f in enumerate(items):
+        n = str(names[i]).strip() if i < len(names) and isinstance(names[i], str) else ""
+        if not re.fullmatch(r"[a-z][a-z0-9]{1,7}", n or ""):
+            words = [w for w in re.split(r"[\s|/=-]+", f["cmd"]) if w and w[0].isalpha()]
+            n = "".join(w[0] for w in words[:5]).lower() or "x"
+        base, k = n, 2
+        while n in taken or shutil.which(n):
+            n, k = f"{base}{k}", k + 1
+        taken.add(n)
+        f["name"] = n
+
+
+def add_alias(name: str, cmd: str, uses: int) -> None:
+    HABITS.parent.mkdir(parents=True, exist_ok=True)
+    if not HABITS.exists():
+        HABITS.write_text("# Shortcuts accepted from `dot habits` (your most-typed commands).\n"
+                          "# Edit or delete freely; loaded by aliases.sh.\n")
+    q = cmd.replace("'", "'\\''")
+    with HABITS.open("a") as f:
+        f.write(f"alias {name}='{q}'   # {uses}× in 30 days, added {dt.date.today()}\n")
+
+
+def add_recipe(name: str, cmd: str) -> None:
+    NAVI.parent.mkdir(parents=True, exist_ok=True)
+    if not NAVI.exists():
+        NAVI.write_text("% habits\n\n")
+    with NAVI.open("a") as f:
+        f.write(f"# {name}: {cmd[:60]}\n{cmd}\n\n")
+
+
+def never(cmd: str) -> None:
+    DATA.mkdir(parents=True, exist_ok=True)
+    with IGNORE.open("a") as f:
+        f.write(cmd + "\n")
+
+
+def ask(prompt: str) -> str:
+    try:
+        with open("/dev/tty") as tty:
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+            return tty.readline().strip()
+    except OSError:
+        return "n"
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--check", action="store_true")
+    p.add_argument("--list", action="store_true")
+    a = p.parse_args()
+    if a.list:
+        print(HABITS.read_text() if HABITS.exists() else "no shortcuts yet — dot habits")
+        return
+    items = suggestions()
+    if a.check:
+        print(len(items))
+        return
+    if not items:
+        print("Nothing new: no long command you repeat often enough. Check back next week.")
+        return
+    print("\033[2m… naming them\033[0m", end="\r")
+    name_them(items)
+    print(f"\033[1m{len(items)} shortcut idea(s) from your last 30 days\033[0m  "
+          "\033[2m(y = alias · r = navi recipe · e = other name · n = not now · s = never)\033[0m\n")
+    added = 0
+    for f in items:
+        tail = "  \033[2m(+ the rest of the command)\033[0m" if f["kind"] == "prefix" else ""
+        print(f"  \033[36m{f['cmd']}\033[0m{tail}")
+        ans = ask(f"  {f['uses']}× → alias \033[1m{f['name']}\033[0m? [Y/r/e/n/s] ").lower()
+        if ans == "e":
+            new = ask("  name: ")
+            if re.fullmatch(r"[A-Za-z_][\w.-]*", new or ""):
+                f["name"] = new
+                ans = "y"
+        if ans in ("", "y", "yes"):
+            add_alias(f["name"], f["cmd"], f["uses"])
+            added += 1
+            print(f"  \033[32m✓ alias {f['name']}\033[0m\n")
+        elif ans == "r":
+            add_recipe(f["name"], f["cmd"])
+            added += 1
+            print("  \033[32m✓ navi recipe (Ctrl+G)\033[0m\n")
+        elif ans == "s":
+            never(f["cmd"])
+            print("  \033[2mwon't suggest it again\033[0m\n")
+        else:
+            print()
+    if added:
+        print(f"Added {added}. Open a new shell (or `exec $SHELL`) to use them; `dot save \"habits\"` keeps them in git.")
+
+
+if __name__ == "__main__":
+    main()

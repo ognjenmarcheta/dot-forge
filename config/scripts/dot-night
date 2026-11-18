@@ -1,0 +1,457 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot night — queue tasks for Claude Code to do overnight, review them in the morning.
+
+Each task runs at 01:30 (systemd user timer / launchd; or `dot night run` now)
+in its own git worktree on a fresh `night/…` branch from origin's default
+branch, so your checkout is never touched. Claude uses your subscription
+login (never an API key), may edit files, run the project's build/test tools
+and commit — it can't push, install system packages or reach other folders.
+Nothing leaves the machine until you say `dot night pr`.
+
+  dot night "repo: task"          queue it (repo = folder name under ~/Github)
+  dot night "task"                queue it for the repo you're in
+  dot night                       the queue and last results
+  dot night report                what happened overnight (also shown at your first prompt)
+  dot night open ID               open the worktree as a workspace (Claude session: `claude -c`)
+  dot night diff ID               what it changed
+  dot night pr ID                 push the branch and open a draft PR
+  dot night cancel ID | retry ID | clean [ID]
+  dot night run [ID]              run the queue now
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share")) / "dotfiles" / "night"
+QUEUE = DATA / "queue.json"
+UNSEEN = DATA / "unseen"          # one line for the first prompt of the day
+SCRIPTS = Path(__file__).resolve().parent
+GITHUB = Path(os.environ.get("DOT_PROJECTS", HOME / "Github"))
+TIMEOUT = int(os.environ.get("DOT_NIGHT_TIMEOUT", str(3 * 3600)))
+C = sys.stdout.isatty()
+STRIP_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+ALLOWED = ["Read", "Edit", "Write", "Glob", "Grep", "TodoWrite",
+           "Bash(pnpm *)", "Bash(npm *)", "Bash(npx *)", "Bash(node *)", "Bash(yarn *)", "Bash(bun *)",
+           "Bash(uv *)", "Bash(python3 *)", "Bash(pytest*)", "Bash(cargo *)", "Bash(go *)",
+           "Bash(make *)", "Bash(just *)", "Bash(mise run *)",
+           "Bash(git add *)", "Bash(git commit *)", "Bash(git status*)", "Bash(git diff*)",
+           "Bash(git log*)", "Bash(git show*)", "Bash(git restore *)", "Bash(git mv *)",
+           "Bash(ls*)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)", "Bash(rg *)",
+           "Bash(find *)", "Bash(mkdir *)"]
+DENIED = ["Bash(git push*)", "Bash(git remote*)", "Bash(git config*)", "Bash(gh *)", "Bash(sudo *)",
+          "Bash(curl *)", "Bash(wget *)", "Bash(ssh *)", "Bash(rm -rf /*)", "WebFetch", "WebSearch"]
+# your projects' commitlint (Kaine Forge) rejects AI attribution in commits
+NO_ATTRIBUTION = json.dumps({"attribution": {"commit": "", "pr": "", "sessionUrl": False}, "includeCoAuthoredBy": False})
+ATTRIBUTION_RE = r"^(co-authored-by:.*(claude|anthropic|noreply@anthropic)|claude-session:|.*generated with \[?claude)"
+
+RULES = """You are working unattended overnight in a git worktree of {repo} on branch {branch}.
+Nobody can answer questions: make sensible decisions, note them, and keep going.
+
+Task: {task}
+
+Rules:
+- Work only inside this folder. Read the repo's CLAUDE.md / AGENTS.md / README first and follow them.
+- Install dependencies with the project's package manager if needed; run its lint, typecheck and tests.
+- Commit as you go with Conventional Commit messages (e.g. "fix(api): …"). Do NOT add any AI
+  attribution, Co-Authored-By or "Generated with" lines to commits. Never push.
+- If the task is unclear, too risky or blocked, do the safe part, commit it, and explain what's left.
+- Finish with a short report. Its FIRST line must be exactly "STATUS: READY" (done, checks pass) or
+  "STATUS: NEEDS-YOU" (questions, failing checks, or partly done). Then: what you changed, decisions
+  you made, and anything to check before merging."""
+
+
+def col(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if C else s
+
+
+# ------------------------------------------------------------------ queue --
+
+def load() -> list[dict]:
+    try:
+        return json.loads(QUEUE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save(items: list[dict]) -> None:
+    DATA.mkdir(parents=True, exist_ok=True)
+    os.chmod(DATA, 0o700)
+    tmp = QUEUE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(items, indent=2))
+    tmp.replace(QUEUE)
+
+
+def update(item_id: str, **fields) -> dict:
+    items = load()
+    for it in items:
+        if it["id"] == item_id:
+            it.update(fields)
+            save(items)
+            return it
+    raise KeyError(item_id)
+
+
+def find(items: list[dict], item_id: str) -> dict:
+    for it in items:
+        if it["id"] == item_id or it["id"].startswith(item_id):
+            return it
+    sys.exit(f"dot night: no task {item_id}")
+
+
+def git(repo, *args, check=True) -> str:
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+def resolve_repo(text: str) -> tuple[Path, str]:
+    m = re.match(r"^\s*([\w.~/-]+):\s+(.+)$", text, re.S)
+    if m:
+        name, task = m.group(1), m.group(2).strip()
+        for cand in (Path(name).expanduser(), GITHUB / name):
+            if (cand / ".git").exists():
+                return cand.resolve(), task
+    root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if root.returncode != 0:
+        sys.exit('dot night: say which repo — dot night "my-repo: what to do" (or run it inside the repo)')
+    path = Path(root.stdout.strip())
+    # inside a night worktree: queue for the real repo
+    common = Path(git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+    return common.resolve(), text.strip()
+
+
+def slug(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return "-".join(s.split("-")[:6])[:40] or "task"
+
+
+def add(text: str) -> None:
+    repo, task = resolve_repo(text)
+    items = load()
+    item_id = dt.datetime.now().strftime("%m%d") + f"{len(items) % 100:02d}" + base64.b32encode(os.urandom(2)).decode()[:2].lower()
+    items.append({"id": item_id, "repo": str(repo), "task": task, "state": "queued",
+                  "added": dt.datetime.now().isoformat(timespec="seconds")})
+    save(items)
+    print(f"{col('35', '🌙')} queued {col('1', item_id)} for {col('36', repo.name)}: {task}")
+    print(col("2", f"  runs at 01:30 (or now: dot night run {item_id}) · dot night cancel {item_id}"))
+
+
+# -------------------------------------------------------------------- run --
+
+def default_branch(repo: Path) -> str:
+    ref = git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+    if ref:
+        return ref
+    for b in ("origin/main", "origin/master"):
+        if git(repo, "rev-parse", "--verify", "--quiet", b, check=False):
+            return b
+    return "HEAD"
+
+
+def prepare(it: dict) -> tuple[Path, str, str]:
+    repo = Path(it["repo"])
+    if it.get("worktree") and Path(it["worktree"]).exists():   # retry / after a usage limit: carry on
+        return Path(it["worktree"]), it["branch"], it["base"]
+    git(repo, "fetch", "--quiet", "origin", check=False)
+    base = default_branch(repo)
+    branch = f"night/{dt.date.today():%Y%m%d}-{slug(it['task'])}"
+    if git(repo, "rev-parse", "--verify", "--quiet", branch, check=False):
+        branch += "-" + it["id"][-2:]
+    wt = repo.parent / ".night" / f"{repo.name}-{it['id']}"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, "worktree", "add", "--quiet", "-b", branch, str(wt), base)
+    # untracked env files the project needs to build / test
+    for f in repo.glob(".env*"):
+        if f.is_file() and not git(repo, "ls-files", f.name, check=False):
+            shutil.copy2(f, wt / f.name)
+    return wt, branch, base
+
+
+def notify(title: str, body: str) -> None:
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["osascript", "-e", f"display notification {json.dumps(body)} with title {json.dumps(title)}"], timeout=10)
+        elif shutil.which("notify-send"):
+            subprocess.run(["notify-send", "-a", "dot night", title, body], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def run_one(it: dict) -> str:
+    """Returns the new state."""
+    if not shutil.which("claude"):
+        update(it["id"], state="failed", summary="claude (Claude Code) not installed")
+        return "failed"
+    try:
+        wt, branch, base = prepare(it)
+    except RuntimeError as e:
+        update(it["id"], state="failed", summary=str(e))
+        return "failed"
+    started = time.time()
+    update(it["id"], state="running", worktree=str(wt), branch=branch, base=base,
+           started=dt.datetime.now().isoformat(timespec="seconds"))
+    prompt = RULES.format(repo=Path(it["repo"]).name, branch=branch, task=it["task"])
+    env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+    env["DOT_NIGHT"] = "1"
+    cmd = ["claude", "-p", "--output-format", "json", "--permission-mode", "dontAsk",
+           "--settings", NO_ATTRIBUTION,
+           "--max-turns", os.environ.get("DOT_NIGHT_TURNS", "200"),
+           "--disallowedTools", *DENIED, "--allowedTools", *ALLOWED]
+    log = DATA / f"{it['id']}.json"
+    try:
+        r = subprocess.run(cmd, input=prompt, cwd=wt, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+        out, err, code = r.stdout, r.stderr, r.returncode
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout or ""
+        out = partial.decode(errors="ignore") if isinstance(partial, bytes) else partial
+        err, code = "timed out", -1
+    log.write_text(out or err)
+    try:
+        res = json.loads(out)
+    except json.JSONDecodeError:
+        res = {"result": (out or err).strip(), "is_error": code != 0}
+    text = str(res.get("result") or "").strip()
+    commits = int(git(wt, "rev-list", "--count", f"{base}..HEAD", check=False) or 0)
+    dirty = bool(git(wt, "status", "--porcelain", check=False))
+    if commits:
+        strip_attribution(wt, base, dirty)
+    stat = git(wt, "diff", "--shortstat", f"{base}...HEAD", check=False)
+    limit = re.search(r"usage limit|limit reached|rate.?limit|out of (extra )?usage", text + err, re.I)
+    if limit:
+        state = "limit"
+    elif code == -1:
+        state = "needs-you"
+        text = "Timed out after %dh.\n%s" % (TIMEOUT // 3600, text)
+    elif res.get("is_error") or code not in (0,):
+        state = "failed"
+    elif text.splitlines() and text.splitlines()[0].strip().upper() == "STATUS: READY" and commits:
+        state = "ready"
+    else:
+        state = "needs-you"
+    update(it["id"], state=state, summary=text[:4000], commits=commits, dirty=dirty, stat=stat,
+           minutes=round((time.time() - started) / 60), turns=res.get("num_turns"),
+           finished=dt.datetime.now().isoformat(timespec="seconds"), seen=False)
+    return state
+
+
+def strip_attribution(wt: Path, base: str, dirty: bool) -> None:
+    """Safety net: drop Co-Authored-By: Claude / Claude-Session / "Generated with" lines that slipped in."""
+    msgs = git(wt, "log", "--format=%B", f"{base}..HEAD", check=False)
+    if not re.search(ATTRIBUTION_RE, msgs, re.I | re.M):
+        return
+    stash = dirty and subprocess.run(["git", "-C", str(wt), "stash", "--include-untracked", "-q"]).returncode == 0
+    py = ("import re,sys; t=sys.stdin.read(); "
+          f"t=re.sub(r'(?im){ATTRIBUTION_RE}.*\\n?', '', t); sys.stdout.write(t.rstrip() + '\\n')")
+    filt = f"{shlex.quote(sys.executable)} -c {shlex.quote(py)}"
+    subprocess.run(["git", "-C", str(wt), "filter-branch", "-f", "--msg-filter", filt, f"{base}..HEAD"],
+                   capture_output=True, env={**os.environ, "FILTER_BRANCH_SQUELCH_WARNING": "1"})
+    branch = git(wt, "symbolic-ref", "-q", "HEAD", check=False)
+    if branch:
+        git(wt, "update-ref", "-d", f"refs/original/{branch}", check=False)
+    if stash:
+        subprocess.run(["git", "-C", str(wt), "stash", "pop", "-q"])
+
+
+def cmd_run(only: str | None) -> None:
+    DATA.mkdir(parents=True, exist_ok=True)
+    lock = open(DATA / "run.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("dot night: already running")
+    todo = [it for it in load() if it["state"] == "queued" and (not only or it["id"].startswith(only))]
+    if not todo:
+        print("dot night: nothing queued")
+        return
+    check = subprocess.run([str(SCRIPTS / "dot-ai"), "--check"], capture_output=True, text=True)
+    if check.returncode != 0:
+        msg = (check.stderr or check.stdout).strip() or "Claude Code isn't logged in with your subscription"
+        notify("🌙 Night shift didn't start", msg)
+        sys.exit(f"dot night: {msg}")
+    done: dict[str, int] = {}
+    for it in todo:
+        print(f"🌙 {it['id']} {Path(it['repo']).name}: {it['task'][:70]}", flush=True)
+        state = run_one(it)
+        done[state] = done.get(state, 0) + 1
+        print(f"   → {state}", flush=True)
+        if state == "limit":
+            # put the rest back; nothing more will run tonight
+            update(it["id"], state="queued", summary="hit the subscription usage limit — will retry next night")
+            break
+    summary = ", ".join(f"{n} {s}" for s, n in done.items())
+    UNSEEN.write_text(f"🌙 night shift: {summary} — dot night report\n")
+    notify("🌙 Night shift done", summary)
+
+
+# ---------------------------------------------------------------- reports --
+
+ICON = {"queued": "⏳", "running": "⚙️ ", "ready": "✅", "needs-you": "🙋", "failed": "❌", "limit": "⛽",
+        "cancelled": "🚫", "pr": "🔀", "cleaned": "🧹"}
+
+
+def line(it: dict) -> str:
+    extra = []
+    if it.get("commits") is not None and it["state"] not in ("queued",):
+        extra.append(f"{it['commits']} commit(s)")
+    if it.get("stat"):
+        extra.append(it["stat"].strip())
+    if it.get("minutes") is not None:
+        extra.append(f"{it['minutes']} min")
+    if it.get("pr"):
+        extra.append(it["pr"])
+    tail = col("2", " · ".join(extra)) if extra else ""
+    return (f"{ICON.get(it['state'], '•')} {col('1', it['id'])} {col('36', Path(it['repo']).name)}: "
+            f"{it['task'][:80]}  {tail}")
+
+
+def cmd_list() -> None:
+    items = [it for it in load() if it["state"] != "cleaned"]
+    if not items:
+        print('Nothing queued. dot night "repo: what to do"  (dot night --help)')
+        return
+    for it in items[-25:]:
+        print(line(it))
+
+
+def cmd_report(brief: bool) -> None:
+    items = load()
+    fresh = [it for it in items if it.get("finished") and not it.get("seen")]
+    UNSEEN.unlink(missing_ok=True)
+    if not fresh:
+        if not brief:
+            print("No new night-shift results.")
+        return
+    for it in fresh:
+        print(line(it))
+        if not brief:
+            body = (it.get("summary") or "").strip()
+            if body:
+                for l in body.splitlines()[:25]:
+                    print("    " + l)
+            nxt = {"ready": f"dot night diff {it['id']} · dot night pr {it['id']}",
+                   "needs-you": f"dot night open {it['id']} (then `claude -c` to continue)",
+                   "failed": f"dot night retry {it['id']}"}.get(it["state"])
+            if nxt:
+                print(col("2", "    → " + nxt))
+            print()
+        it["seen"] = True
+    save(items)
+
+
+def uservar(name: str, value: str) -> None:
+    if os.environ.get("TERM_PROGRAM") == "WezTerm":
+        sys.stdout.write(f"\033]1337;SetUserVar={name}={base64.b64encode(value.encode()).decode()}\007")
+        sys.stdout.flush()
+
+
+def need_worktree(it: dict) -> Path:
+    wt = Path(it.get("worktree") or "")
+    if not it.get("worktree") or not wt.exists():
+        sys.exit(f"dot night: {it['id']} has no worktree ({it['state']})")
+    return wt
+
+
+def cmd_open(it: dict) -> None:
+    wt = need_worktree(it)
+    if os.environ.get("TERM_PROGRAM") == "WezTerm":
+        uservar("dot_open", str(wt))
+        print(f"opening {wt}")
+    else:
+        print(wt)
+
+
+def cmd_diff(it: dict) -> None:
+    wt = need_worktree(it)
+    os.execvp("git", ["git", "-C", str(wt), "log", "-p", "--stat", f"{it.get('base', 'origin/HEAD')}..HEAD"])
+
+
+def cmd_pr(it: dict) -> None:
+    wt = need_worktree(it)
+    if not shutil.which("gh"):
+        sys.exit("dot night: needs gh (GitHub CLI)")
+    subprocess.run(["git", "-C", str(wt), "push", "-u", "origin", it["branch"]], check=True)
+    body = (it.get("summary") or "").splitlines()
+    body = "\n".join(l for l in body if not l.upper().startswith("STATUS:")).strip()
+    title = git(wt, "log", "-1", "--format=%s", check=False) if it.get("commits") == 1 else it["task"][:70]
+    base = (it.get("base") or "origin/main").removeprefix("origin/")
+    r = subprocess.run(["gh", "pr", "create", "--draft", "--base", base, "--head", it["branch"],
+                        "--title", title, "--body", body or it["task"]], cwd=wt, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(r.stderr.strip())
+    url = r.stdout.strip().splitlines()[-1]
+    update(it["id"], state="pr", pr=url)
+    print(f"🔀 {url}")
+
+
+def cmd_clean(target: str | None) -> None:
+    items = load()
+    for it in items:
+        if target and not it["id"].startswith(target):
+            continue
+        if not target and it["state"] not in ("pr", "cancelled", "failed"):
+            continue
+        wt = it.get("worktree")
+        if wt and Path(wt).exists():
+            subprocess.run(["git", "-C", it["repo"], "worktree", "remove", "--force", wt], capture_output=True)
+        if it["state"] in ("queued", "running"):
+            continue
+        it["state"] = "cleaned"
+        print(f"🧹 {it['id']} {Path(it['repo']).name}")
+    save(items)
+    print(col("2", "branches are kept — delete with git branch -D night/… when merged"))
+
+
+def main():
+    argv = sys.argv[1:]
+    sub = {"list", "report", "open", "diff", "pr", "cancel", "retry", "clean", "run"}
+    if argv and argv[0] not in sub and not argv[0].startswith("-"):
+        add(" ".join(argv))
+        return
+    p = argparse.ArgumentParser(prog="dot night", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("action", nargs="?", default="list", choices=sorted(sub))
+    p.add_argument("id", nargs="?")
+    p.add_argument("--brief", action="store_true")
+    a = p.parse_args(argv)
+    if a.action == "list":
+        cmd_list()
+    elif a.action == "report":
+        cmd_report(a.brief)
+    elif a.action == "run":
+        cmd_run(a.id)
+    elif a.action == "clean":
+        cmd_clean(a.id)
+    else:
+        if not a.id:
+            sys.exit(f"dot night {a.action} ID")
+        items = load()
+        it = find(items, a.id)
+        if a.action == "cancel":
+            update(it["id"], state="cancelled")
+            print(f"🚫 {it['id']} cancelled")
+        elif a.action == "retry":
+            update(it["id"], state="queued", finished=None, seen=False)
+            print(f"⏳ {it['id']} queued again")
+        else:
+            {"open": cmd_open, "diff": cmd_diff, "pr": cmd_pr}[a.action](it)
+
+
+if __name__ == "__main__":
+    main()

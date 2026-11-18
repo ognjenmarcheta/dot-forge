@@ -80,6 +80,15 @@ if [ "$OS" = Linux ] && [ -z "${CI:-}" ]; then
     else warn "WezTerm isn't the regular build (Flatpak?) — re-run install.sh"; fi
 fi
 if grep -q agent-notify "$HOME/.claude/settings.json" 2>/dev/null; then ok "Claude Code alert hooks"; else warn "Claude Code alert hooks not set up (run install.sh)"; fi
+if [ -z "${CI:-}" ]; then
+    if [ "$OS" = Darwin ]; then
+        if launchctl list 2>/dev/null | grep -q software.byteforge.dot-night; then ok "night shift runs at 01:30 (launchd)"
+        else warn "night shift scheduler off — re-run install.sh (dot night run works by hand)"; fi
+    elif have systemctl; then
+        if systemctl --user is-enabled dot-night.timer >/dev/null 2>&1; then ok "night shift runs at 01:30 (systemd timer)"
+        else warn "night shift timer off — re-run install.sh (dot night run works by hand)"; fi
+    fi
+fi
 
 head_ "git"
 if [ "$(git config --get core.pager)" = delta ]; then ok "git uses delta"; else bad "git config not picked up (core.pager)"; fi
@@ -103,7 +112,7 @@ if TERM=xterm-256color bash -ic '
 else
     bad "prompt has no clickable links"
 fi
-for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check; do
+for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check _dot_daily; do
     if TERM=xterm-256color bash -ic "type $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in bash"; fi
 done
 
@@ -116,7 +125,7 @@ if have zsh; then
     else
         bad "prompt has no clickable links"
     fi
-    for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check; do
+    for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check _dot_daily _dot_share_accept; do
         if TERM=xterm-256color zsh -ic "whence -w $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in zsh"; fi
     done
 fi

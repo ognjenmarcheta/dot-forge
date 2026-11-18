@@ -32,6 +32,8 @@ jobs:
       - run: bash tests/lint.sh
       - name: standup / client updates / subscription guard
         run: bash tests/work.sh
+      - name: night shift / recall / habits / share mode / dot new
+        run: bash tests/features.sh
       - name: WezTerm config loads (same version as the Flatpak, else nightly)
         run: |
           base=https://github.com/wez/wezterm/releases/download

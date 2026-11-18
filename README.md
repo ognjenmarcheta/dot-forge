@@ -120,6 +120,35 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 - **Save points**: `dot save-game NAME` / `dot load-game NAME` (or the palette)
   keep a workspace's tabs, splits, folders, running programs and branches
   across reboots; Claude panes resume with `claude --continue`.
+- **New client project**: `dot new portal --client acme` creates a private repo
+  from [Kaine Forge](https://github.com/ognjenmarcheta/kaine-forge), clones it to
+  `~/Github/portal`, runs template adoption (`template-adoption.json`:
+  product name, owner, slug, `software.byteforge.<name>`), `ai:install`,
+  `ai:doctor`, `template:adopt --check`, commits without AI attribution (the
+  template's commitlint rejects it), pushes, then offers `github:setup --apply`
+  and the self-hosted CI runners, files the repo under the client and opens it
+  as a workspace. `--local` = no GitHub, `--dry-run` = show the steps.
+- **Night shift**: `dot night "api: fix the flaky export test"` queues a task;
+  at 01:30 (systemd user timer / launchd) Claude Code works on it in its own
+  worktree (`~/Github/.night/…`, branch `night/…` from origin's default branch)
+  with your subscription login, unattended (`--permission-mode dontAsk`): it may
+  edit, run the project's tools and commit, but not push or use `gh`/`curl`.
+  Trailers like `Co-Authored-By: Claude` are stripped. Your first prompt in the
+  morning says what's ready; `dot night report / diff / open / pr ID`. A usage
+  limit pauses the queue until the next night.
+- **Terminal recall**: every command's output (not full-screen apps), secrets
+  masked, is kept locally for 30 days: `dot recall 5173`, `--here`, `--last 5`,
+  `--ai "what port did the api say yesterday?"`, `--forget`. `DOT_RECALL=0` off.
+- **Habits → shortcuts**: `dot habits` finds long commands you repeat (exact, or
+  the same beginning) and offers aliases (named by Claude) or navi recipes;
+  accepted ones go to `config/shell/habits.sh` (`dot save` keeps them). A hint
+  shows once a week when there are new ones.
+- **Screen share mode**: `dot mode share acme` before a client call: +3 font
+  size, no notifications (also GNOME banners), tabs and badges of other
+  projects show `•••`, red "SHARING · Acme" badge, status bar hidden, recall
+  paused for other projects, and commands that print secrets (`cat .env`,
+  `printenv`, `gh auth token`, `kubectl get secret`…) need a second Enter.
+  `dot mode work` ends it.
 - **Prompt**: Starship with clickable user / path segments / git branch; `↑` = `cd ..`.
 - **Shell**: `ls`/`ll` via eza (icons, git status, clickable), `cat`/`man` via bat,
   `z` + Tab menu of frequent folders, Ctrl+R = atuin history, Ctrl+T / Alt+C =
@@ -143,7 +172,10 @@ home folder, runs `tests/doctor.sh --nvim`, then checks a second run changes
 nothing. It uses the self-hosted runner on the workstation (`kaine-ci-linux`,
 like kaine-forge and ordina-forge) and falls back to GitHub's runners when that
 is down. `macos.yml` does the same on macOS with `/bin/bash` 3.2, only when the
-installer changes (macOS minutes are expensive).
+installer or scripts change (macOS minutes are expensive). `tests/work.sh` and
+`tests/features.sh` test standups, night shift, recall, habits, share mode and
+`dot new` with stand-in `claude` / `gh`. `new-project.yml` runs `dot new --local`
+against the real Kaine Forge template weekly and when `dot-new` changes.
 
 ## Not in this repo (on purpose)
 
