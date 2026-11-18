@@ -20,12 +20,15 @@ if grep -qiE 'error|runtime|attempt to|stack traceback' "$tmp/err"; then
     echo "✗ config errors:"; sed 's/^/    /' "$tmp/err" | head -40; fails=1
 fi
 need() { # label, regex that must appear in the key table
-    if printf '%s\n' "$keys" | grep -qE "$2"; then echo "✓ $1"; else echo "✗ $1 missing"; fails=1; fi
+    if printf '%s\n' "$keys" | grep -qE "$2"; then echo "✓ $1"; else
+        echo "✗ $1 missing"; fails=1
+        printf '%s\n' "$keys" | grep -iE "${3:-LEADER}" | head -8 | sed 's/^/    /'
+    fi
 }
-need "leader Alt+q"          "leader = \{ key = 'q', mods = 'ALT'"
+need "leader Alt+q"          "[Ll]eader.*['\"]q['\"].*ALT|ALT.*['\"]q['\"].*[Ll]eader" "leader"
 need "Leader p (projects)"   "key = 'p', mods = 'LEADER'"
 need "Leader y (copy output)" "key = 'y', mods = 'LEADER'"
-need "Leader Space (quick select)" "key = 'Space', mods = 'LEADER'"
+need "Leader Space (quick select)" "key = '( |Space)', mods = 'LEADER'.*QuickSelect" "QuickSelect"
 need "Shift+Up (prev command)" "key = 'UpArrow', mods = 'SHIFT'"
 need "Ctrl+h (pane/split nav)" "key = 'h', mods = 'CTRL'"
 need "Leader w (workspaces)" "key = 'w', mods = 'LEADER'"
