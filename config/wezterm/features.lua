@@ -49,7 +49,28 @@ local function shell_quote(s)
     return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
+-- ------------------------------------------------- share mode -----
+-- `dot mode share [CLIENT]` sends dot_mode; while sharing: bigger font, no
+-- toasts, only CLIENT's projects named in tabs and badges, red SHARING badge.
+
+function M.sharing()
+    local m = wezterm.GLOBAL.mode
+    return (m and m.mode == "share") and m or nil
+end
+
+-- may this folder be shown by name while sharing?
+function M.share_allows(path)
+    local m = M.sharing()
+    if not m then return true end
+    if not path then return false end
+    for _, p in ipairs(m.paths or {}) do
+        if path == p or path:sub(1, #p + 1) == p .. "/" then return true end
+    end
+    return false
+end
+
 local function toast(window, title, body, ms)
+    if M.sharing() then return end -- nothing pops up during a call
     window:toast_notification(title, body or "", nil, ms or 4000)
 end
 
@@ -273,6 +294,8 @@ local function cwd_of(cwd)
     return (p:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
 end
 
+M.cwd_path = cwd_of
+
 local function git_root(dir)
     if not dir or dir == "" then return nil end
     dir = dir:gsub("/+$", "")
@@ -332,6 +355,7 @@ end
 --     (machine.lua: night = false turns it off, night_hours = {22, 7})
 
 local base_background -- config.background as written in config.lua (set in apply)
+local base_font_size
 
 local function is_night()
     if machine.night == false then return false end
@@ -348,7 +372,9 @@ local function compose(window, pane)
     wezterm.GLOBAL.applied = wezterm.GLOBAL.applied or {}
     local flash = (wezterm.GLOBAL.flash[wid] or 0) > os.time()
     local night = is_night()
-    local sig = (color or "-") .. (flash and "|flash" or "") .. (night and "|night" or "")
+    local share = M.sharing()
+    if share and not M.share_allows(cwd_of(pane:get_current_working_dir())) then color = nil end
+    local sig = (color or "-") .. (flash and "|flash" or "") .. (night and "|night" or "") .. (share and "|share" or "")
     if wezterm.GLOBAL.applied[wid] == sig then return end
     wezterm.GLOBAL.applied[wid] = sig
 
@@ -373,12 +399,23 @@ local function compose(window, pane)
         overrides.background = bg
     end
     overrides.foreground_text_hsb = night and { hue = 1.0, saturation = 0.9, brightness = 0.85 } or nil
+    overrides.font_size = share and ((base_font_size or 12.5) + 3) or nil
     window:set_config_overrides(overrides)
 end
 
 -- Called from update-status: project badge (+ applies the overrides above)
 function M.project_status(window, pane)
     pcall(compose, window, pane)
+    local share = M.sharing()
+    if share then
+        return {
+            { Background = { Color = "#ed8796" } },
+            { Foreground = { Color = "#1e2030" } },
+            { Attribute = { Intensity = "Bold" } },
+            { Text = " ● SHARING · " .. (share.label or "") .. " " },
+            "ResetAttributes",
+        }
+    end
     local name, color = M.project(pane:get_current_working_dir())
     if not name then return {} end
     return {
@@ -463,6 +500,7 @@ end
 
 local right_cache = { t = 0, items = {} }
 function M.right_status()
+    if M.sharing() then return {} end -- nothing about other work on screen
     if os.time() - right_cache.t < 2 then return right_cache.items end
     local items = {}
     local function add(color, text)
@@ -545,6 +583,75 @@ local function save_game(window, name)
     host_output { "mkdir", "-p", saves_dir }
     write_private_file(saves_dir .. "/" .. name .. ".json", json_encode(data))
     toast(window, "💾 Saved \"" .. name .. "\"", ntabs .. " tab(s), " .. npanes .. " pane(s) — dot load-game " .. name)
+end
+
+-- ---------------------------------------------------- terminal recall -----
+-- The shell sends dot_done after each (non-interactive) command; we keep its
+-- output in ~/.local/share/dotfiles/recall/YYYY-MM-DD.jsonl (private, secrets
+-- masked, 30 days) so `dot recall` can search what was ever on screen.
+
+local recall_dir = home .. "/.local/share/dotfiles/recall"
+local recall_max = 20000
+local recall_masks = {
+    "(%f[%w][%w_]*[Tt][Oo][Kk][Ee][Nn][%w_]*%s*[=:]%s*)%S+",
+    "(%f[%w][%w_]*[Ss][Ee][Cc][Rr][Ee][Tt][%w_]*%s*[=:]%s*)%S+",
+    "(%f[%w][%w_]*[Pp][Aa][Ss][Ss][Ww]?[Oo]?[Rr]?[Dd][%w_]*%s*[=:]%s*)%S+",
+    "(%f[%w][%w_]*[Aa][Pp][Ii]_?[Kk][Ee][Yy][%w_]*%s*[=:]%s*)%S+",
+    "([Aa]uthorization:%s*%a+%s+)%S+",
+    "(://[^/%s:@]+:)[^@%s]+(@)",
+}
+local recall_raw = { "ghp_%w+", "gho_%w+", "github_pat_[%w_]+", "sk%-ant%-[%w%-_]+", "sk%-[%w]+", "AKIA%u%u%u%u%u%u%u%u%u%u%u%u%u%u%u%u", "xox[bpas]%-[%w%-]+",
+    "%-%-%-%-%-BEGIN [%u ]*PRIVATE KEY%-%-%-%-%-.-%-%-%-%-%-END [%u ]*PRIVATE KEY%-%-%-%-%-" }
+
+function M.mask_secrets(text)
+    for _, pat in ipairs(recall_masks) do
+        text = text:gsub(pat, function(a, b) return a .. "•••" .. (b or "") end)
+    end
+    for _, pat in ipairs(recall_raw) do text = text:gsub(pat, "•••") end
+    return text
+end
+
+local function append_private_file(path, text)
+    if is_flatpak then
+        wezterm.run_child_process(host_cmd {
+            "sh", "-c", 'umask 077 && printf "%s" "$2" >> "$1"', "sh", path, text,
+        })
+    else
+        local f = io.open(path, "a")
+        if f then f:write(text); f:close() end
+    end
+end
+
+local function recall_capture(pane, value)
+    if os.getenv("DOT_RECALL") == "0" then return end
+    local status, cmd = value:match("^(%-?%d+)\t(.*)$")
+    if not cmd or cmd == "" then return end
+    local ok, zones = pcall(function() return pane:get_semantic_zones("Output") end)
+    if not ok or not zones or #zones == 0 then return end
+    local z = zones[#zones]
+    local key = z.start_y .. ":" .. z.end_y
+    wezterm.GLOBAL.recall_seen = wezterm.GLOBAL.recall_seen or {}
+    local id = tostring(pane:pane_id())
+    if wezterm.GLOBAL.recall_seen[id] == key then return end -- nothing new (e.g. empty output)
+    wezterm.GLOBAL.recall_seen[id] = key
+    local text = pane:get_text_from_semantic_zone(z) or ""
+    text = text:gsub("%s+$", "")
+    if text == "" then return end
+    if #text > recall_max then text = "…" .. text:sub(-recall_max) end
+    local cwd = cwd_of(pane:get_current_working_dir()) or ""
+    if not M.share_allows(cwd) then return end -- not while sharing someone else's screen
+    local entry = json_encode {
+        t = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        cwd = cwd,
+        cmd = M.mask_secrets(cmd),
+        status = tonumber(status),
+        out = M.mask_secrets(text),
+    }
+    if not wezterm.GLOBAL.recall_dir_ok then
+        host_output { "sh", "-c", 'mkdir -p "$1" && chmod 700 "$1"', "sh", recall_dir }
+        wezterm.GLOBAL.recall_dir_ok = true
+    end
+    append_private_file(recall_dir .. "/" .. os.date("%Y-%m-%d") .. ".jsonl", entry .. "\n")
 end
 
 local restart_patterns = {
@@ -671,8 +778,21 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
         local title = (state == "waiting" and "● Claude needs you" or "✓ Claude finished")
             .. (project ~= "" and (" · " .. project) or "")
         toast(window, title, msg, 6000)
+    elseif name == "dot_mode" then
+        local parse = (wezterm.serde and wezterm.serde.json_decode) or wezterm.json_parse
+        local ok, data = pcall(parse, value)
+        wezterm.GLOBAL.mode = (ok and type(data) == "table" and data.mode == "share") and data or nil
+        wezterm.GLOBAL.applied = {} -- re-apply font / colours everywhere
+        for _, gw in ipairs(wezterm.gui.gui_windows()) do
+            local ap = gw:active_pane()
+            if ap then pcall(compose, gw, ap) end
+        end
     elseif name == "dot_fail" then
         flash_failure(window)
+    elseif name == "dot_open" then
+        if value ~= "" then open_project(window, pane, value) end
+    elseif name == "dot_done" then
+        pcall(recall_capture, pane, value)
     elseif name == "dot_save" then
         save_game(window, value)
     elseif name == "dot_load" then
@@ -944,6 +1064,7 @@ end)
 function M.apply(config)
     base_colors = copy(config.colors)
     base_background = copy(config.background)
+    base_font_size = config.font_size
 
     -- Linux: run through XWayland, like the Flatpak build did. WezTerm
     -- 20240203 on native GNOME Wayland can't drag the window by its tab bar

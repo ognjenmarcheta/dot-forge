@@ -15,8 +15,8 @@ run() { # label, command...
     fi
 }
 
-bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/dot-ai config/scripts/dot-fix config/scripts/dot-lobby config/scripts/dot-voice config/scripts/dot-status tests/work.sh config/scripts/agent-notify config/scripts/check-node-updates.sh"
-shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/fix.sh config/shell/lobby.sh config/shell/voice.sh config/shell/bashrc"
+bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/dot-ai config/scripts/dot-fix config/scripts/dot-lobby config/scripts/dot-voice config/scripts/dot-status tests/work.sh config/scripts/agent-notify config/scripts/check-node-updates.sh config/scripts/dot-mode config/scripts/dot-new tests/features.sh"
+shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/fix.sh config/shell/lobby.sh config/shell/voice.sh config/shell/share.sh config/shell/daily.sh config/shell/bashrc"
 
 echo "Syntax"
 for f in $bash_files $shell_files; do run "bash -n $f" bash -n "$f"; done
@@ -54,7 +54,9 @@ else
 fi
 
 echo "Python"
-run "dot-work parses" python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" config/scripts/dot-work
+for py in dot-work dot-night dot-recall dot-habits; do
+    run "$py parses" python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "config/scripts/$py"
+done
 
 echo "Config files"
 run "git config parses" git config -f config/git/config --list

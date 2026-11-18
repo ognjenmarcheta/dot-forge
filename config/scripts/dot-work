@@ -596,9 +596,56 @@ roots = ["~/Github"]          # where your repos live
 """
 
 
+def add_repo_to_client(key: str, path: str, name: str | None):
+    """Append a folder pattern to a client's `repos` list (creating the client if needed)."""
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    text = CONFIG.read_text() if CONFIG.exists() else EXAMPLE
+    lines = text.splitlines()
+    head = next((i for i, l in enumerate(lines) if l.strip() == f"[{key}]"), None)
+    if head is None:
+        lines += ["", f"[{key}]", f'name = "{name or key}"', f'repos = ["{path}"]',
+                  '# contact = ""', '# lang = "en"', '# style = "friendly, short, non-technical"']
+    else:
+        end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+        for i in range(head + 1, end):
+            m = re.match(r'(\s*repos\s*=\s*\[)(.*)\]\s*$', lines[i])
+            if m:
+                items = [x.strip() for x in m.group(2).split(",") if x.strip()]
+                if f'"{path}"' not in items:
+                    items.append(f'"{path}"')
+                lines[i] = f"{m.group(1)}{', '.join(items)}]"
+                break
+        else:
+            lines.insert(head + 1, f'repos = ["{path}"]')
+    CONFIG.write_text("\n".join(lines).rstrip() + "\n")
+    tomllib.loads(CONFIG.read_text())  # still valid
+
+
+def cmd_repos(args):
+    cfg = load_config()
+    out = [{"path": str(r.path), "name": r.name, "remote": r.remote, "client": r.client,
+            "client_name": cfg.clients[r.client].name if r.client in cfg.clients else None}
+           for r in load_repos(cfg)]
+    print(json.dumps(out, indent=None if args.json else 2))
+
+
 def cmd_clients(args):
+    if args.add:
+        key, path = args.add
+        add_repo_to_client(key, path, args.name)
+        print(f"✓ {path} belongs to {args.name or key} now ({CONFIG})")
+        return
     cfg = load_config()
     repos = load_repos(cfg)
+    if args.paths:
+        key = resolve_client(cfg, args.paths)
+        print("\n".join(str(r.path) for r in repos if r.client == key))
+        return
+    if args.show:
+        key = resolve_client(cfg, args.show)
+        print(json.dumps({"key": key, "name": cfg.clients[key].name,
+                          "paths": [str(r.path) for r in repos if r.client == key]}))
+        return
     if args.init:
         if CONFIG.exists():
             die(f"{CONFIG} exists — edit it with: $EDITOR {CONFIG}")
@@ -654,7 +701,15 @@ def main():
 
     c = sub.add_parser("clients")
     c.add_argument("--init", action="store_true")
+    c.add_argument("--add", nargs=2, metavar=("CLIENT", "PATH"), help="add a repo folder to a client")
+    c.add_argument("--name", help="display name when --add creates the client")
+    c.add_argument("--paths", metavar="CLIENT", help="print the client's repo folders")
+    c.add_argument("--show", metavar="CLIENT", help="the client as JSON: key, name, repo folders")
     c.set_defaults(fn=cmd_clients)
+
+    rp = sub.add_parser("repos")
+    rp.add_argument("--json", action="store_true")
+    rp.set_defaults(fn=cmd_repos)
 
     args = p.parse_args()
     args.fn(args)

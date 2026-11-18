@@ -164,7 +164,13 @@ wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_wid
     end
 
     -- thin stripe in the tab's project colour
-    local _, project_color = require("features").project(tab.active_pane.current_working_dir)
+    local features = require("features")
+    local _, project_color = features.project(tab.active_pane.current_working_dir)
+    -- sharing your screen: tabs of other projects show no name
+    if features.sharing() and not features.share_allows(features.cwd_path(tab.active_pane.current_working_dir)) then
+        label = "•••"
+        project_color = nil
+    end
     return {
         { Background = { Color = bg } },
         { Foreground = { Color = project_color or bg } },
@@ -238,7 +244,7 @@ end)
 -- Toast when a long command finishes while you're in another window
 -- (set by ~/.config/shell/notify.sh through OSC 1337 SetUserVar).
 wezterm.on("user-var-changed", function(window, pane, name, value)
-    if name ~= "dot_cmd_done" or window:is_focused() then
+    if name ~= "dot_cmd_done" or window:is_focused() or require("features").sharing() then
         return
     end
     local status, secs, cmd = value:match("^(%-?%d+)\t(%d+)\t(.*)$")
