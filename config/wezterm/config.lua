@@ -220,6 +220,59 @@ config.keys = {
     },
 }
 
+-- Workspaces: named sets of tabs (one per project/client)
+table.insert(config.keys, { -- Leader w: fuzzy-pick or switch workspace
+    mods = "LEADER", key = "w",
+    action = wezterm.action.ShowLauncherArgs { flags = "FUZZY|WORKSPACES" },
+})
+table.insert(config.keys, { -- Leader W: new named workspace
+    mods = "LEADER", key = "W",
+    action = wezterm.action.PromptInputLine {
+        description = "Name for the new workspace",
+        action = wezterm.action_callback(function(window, pane, line)
+            if line and line ~= "" then
+                window:perform_action(wezterm.action.SwitchToWorkspace { name = line }, pane)
+            end
+        end),
+    },
+})
+
+-- Seamless Ctrl+h/j/k/l between Neovim splits and WezTerm panes
+-- (smart-splits.nvim sets the IS_NVIM user var). Alt+h/j/k/l resizes.
+-- With no pane in that direction the key goes to the program as usual, so
+-- Ctrl+L still clears the screen and Ctrl+K still kills to end of line.
+local direction_keys = { h = "Left", j = "Down", k = "Up", l = "Right" }
+local function is_nvim(pane)
+    return pane:get_user_vars().IS_NVIM == "true"
+end
+local function split_nav(kind, key)
+    local mods = kind == "resize" and "META" or "CTRL"
+    return {
+        key = key,
+        mods = mods,
+        action = wezterm.action_callback(function(win, pane)
+            local dir = direction_keys[key]
+            if is_nvim(pane) then
+                win:perform_action({ SendKey = { key = key, mods = mods } }, pane)
+                return
+            end
+            local tab = pane:tab()
+            local has_neighbor = tab and tab:get_pane_direction(dir) ~= nil
+            if not has_neighbor then
+                win:perform_action({ SendKey = { key = key, mods = mods } }, pane)
+            elseif kind == "resize" then
+                win:perform_action({ AdjustPaneSize = { dir, 3 } }, pane)
+            else
+                win:perform_action({ ActivatePaneDirection = dir }, pane)
+            end
+        end),
+    }
+end
+for _, k in ipairs({ "h", "j", "k", "l" }) do
+    table.insert(config.keys, split_nav("move", k))
+    table.insert(config.keys, split_nav("resize", k))
+end
+
 for i = 0, 9 do
     -- leader + number to activate that tab
     table.insert(config.keys, {
@@ -241,9 +294,20 @@ config.mouse_bindings = {
         mods = "NONE",
         action = wezterm.action.OpenLinkAtMouseCursor,
     },
+    -- Inside apps that use the mouse (nvim, lazygit, btop, herdr…) plain
+    -- clicks go to the app untouched. Stealing only the button *release*
+    -- left the app thinking the button was still held, so every click turned
+    -- into a drag-selection. Use Ctrl+click to open a link there instead; the
+    -- Ctrl+press is swallowed too so the app never sees a half click.
+    {
+        event = { Down = { streak = 1, button = "Left" } },
+        mods = "CTRL",
+        action = wezterm.action.Nop,
+        mouse_reporting = true,
+    },
     {
         event = { Up = { streak = 1, button = "Left" } },
-        mods = "NONE",
+        mods = "CTRL",
         action = wezterm.action.OpenLinkAtMouseCursor,
         mouse_reporting = true,
     },

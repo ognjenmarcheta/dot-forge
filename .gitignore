@@ -16,3 +16,7 @@ config/containers/auth.json
 
 # Neovim backups
 config/nvim/lazy-lock.before-fix.json
+
+# per-machine, never committed
+config/git/local
+config/shell/local.sh

@@ -1,9 +1,10 @@
-# macOS packages for install.sh (brew bundle)
+# macOS packages for install.sh (brew bundle). This file is Ruby, so GUI apps
+# are skipped in CI (`CI=true`), where they'd only slow the run down.
 
 tap "nikitabobko/tap"
 
 # terminal + shell
-cask "wezterm"
+cask "wezterm" unless ENV["CI"]
 brew "starship"
 brew "zoxide"
 brew "fzf"
@@ -12,6 +13,10 @@ brew "coreutils"        # gls: clickable `ls` links
 brew "git"
 brew "gh"
 brew "jq"
+brew "mise"             # node / pnpm / python versions (config/mise)
+brew "eza"              # ls with icons, git status, clickable entries
+brew "bat"              # cat / man pages with syntax highlighting
+brew "git-delta"        # nicer git diffs (git + lazygit pager)
 
 # editor + friends
 # (Neovim itself is NOT from Homebrew: Homebrew ships 0.12, this config is
@@ -31,10 +36,12 @@ brew "opencode"          # OpenCode CLI (used by the opencode.nvim plugin)
 
 # misc CLI
 brew "btop"
+brew "dust"             # what is using disk space
+brew "duf"              # disk usage overview
 brew "fastfetch"
 brew "thefuck"
 brew "vhs"
 brew "terminal-notifier" # herdr script notifications
 
 # window manager
-cask "nikitabobko/tap/aerospace"
+cask "nikitabobko/tap/aerospace" unless ENV["CI"]
