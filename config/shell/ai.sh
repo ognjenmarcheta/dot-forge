@@ -82,6 +82,22 @@ Model: AI_MODEL=haiku|sonnet|opus (default: sonnet)
 EOF
 }
 
+# What the terminal shows right now (the failed command and its output), asked
+# from WezTerm: the shell sets a user var, WezTerm writes the visible text to
+# a private file in ~/.cache/dotfiles that we read and delete. Empty elsewhere.
+_ai_screen_context() {
+    [ "${TERM_PROGRAM:-}" = WezTerm ] || return 0
+    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles" f i=0
+    mkdir -p "$dir" && chmod 700 "$dir" 2>/dev/null
+    f="$dir/ai-ctx-$$-${RANDOM}"
+    printf '\033]1337;SetUserVar=%s=%s\007' dot_ai_ctx "$(printf '%s' "$f" | base64 | tr -d '\n')"
+    while [ ! -s "$f" ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+    [ -s "$f" ] || return 0
+    # drop the trailing `ai fix` prompt line(s) and keep it short
+    sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "$f" | tail -n 80 | cut -c1-300
+    rm -f -- "$f"
+}
+
 ai() {
     local last_status=$?            # first: exit status of the previous command
     if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then _ai_help; return 0; fi
@@ -102,7 +118,15 @@ ai() {
             prev=$(fc -ln -2 -2 2>/dev/null | sed 's/^[[:space:]]*//')
             if [ -z "$prev" ]; then echo "ai fix: no previous command in history"; return 1; fi
             printf '\033[2mfixing: %s (exit %s)\033[0m\n' "$prev" "$last_status"
+            local screen
+            screen=$(_ai_screen_context)
             set -- "This command just failed with exit status $last_status: $prev
+${screen:+
+This is what the terminal showed (its output, possibly cut off at the top):
+---
+$screen
+---
+}
 Give a corrected command that does what it was meant to do. ${*:+Extra info from the user: $*}"
             ;;
     esac

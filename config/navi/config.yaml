@@ -1,0 +1,11 @@
+# navi (Ctrl+G in the shell, or run `navi`). Cheats live in ./cheats —
+# add your own *.cheat files there. Syntax: https://github.com/denisidoro/navi
+finder:
+  command: fzf
+style:
+  tag:
+    width_percentage: 20
+  comment:
+    width_percentage: 40
+shell:
+  command: bash

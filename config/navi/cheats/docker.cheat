@@ -1,0 +1,28 @@
+% docker
+
+# Running containers
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+
+# Follow a container's logs
+docker logs -f --tail 200 <container>
+
+# Shell inside a container
+docker exec -it <container> sh -c 'command -v bash >/dev/null && exec bash || exec sh'
+
+# Stop and remove a container
+docker rm -f <container>
+
+# Compose: rebuild and start in the background
+docker compose up -d --build
+
+# Compose: follow logs of one service
+docker compose logs -f <service>
+
+# What is using disk space
+docker system df -v
+
+# Clean up stopped containers, unused images and build cache
+docker system prune -af --volumes
+
+$ container: docker ps --format '{{.Names}}'
+$ service: docker compose config --services

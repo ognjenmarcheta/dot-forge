@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Called by Claude Code hooks (install.sh adds them to ~/.claude/settings.json):
+#   agent-notify waiting   Claude needs you (permission prompt / idle input)
+#   agent-notify done      Claude finished its turn
+#   agent-notify working   you sent a prompt (clears the tab marker)
+# In WezTerm it marks the tab with ● and pops a toast if you're looking at
+# another tab or app. Elsewhere it falls back to a desktop notification.
+# The hook's JSON arrives on stdin; we only use its "message" field.
+# Docs: https://code.claude.com/docs/en/hooks
+
+state="${1:-waiting}"
+input=""
+[ -t 0 ] || input="$(cat 2>/dev/null)"
+msg=""
+if [ -n "$input" ] && command -v jq >/dev/null 2>&1; then
+    msg="$(printf '%s' "$input" | jq -r '.message // empty' 2>/dev/null)"
+fi
+project="$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")"
+case "$state" in
+    waiting) [ -n "$msg" ] || msg="Claude is waiting for you" ;;
+    done)    [ -n "$msg" ] || msg="Claude finished" ;;
+    working) msg="" ;;
+esac
+
+if [ "${TERM_PROGRAM:-}" = WezTerm ] && command -v jq >/dev/null 2>&1; then
+    # Hooks have no terminal: Claude Code writes `terminalSequence` from our
+    # JSON reply to the terminal for us (interactive sessions only).
+    payload="$(printf '%s\t%s\t%s' "$state" "$project" "${msg:0:200}" | base64 | tr -d '\n')"
+    seq="$(printf '\033]1337;SetUserVar=%s=%s\007' dot_agent "$payload")"
+    jq -nc --arg seq "$seq" '{terminalSequence: $seq}'
+elif [ "$state" != working ]; then
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "Claude Code" "Claude · $project" "$msg"
+    elif command -v terminal-notifier >/dev/null 2>&1; then
+        terminal-notifier -title "Claude · $project" -message "$msg" >/dev/null
+    fi
+fi
+exit 0
