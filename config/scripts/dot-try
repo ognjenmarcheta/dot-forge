@@ -210,11 +210,20 @@ cmd_try() {
     [ "$keep" -eq 1 ] || expires=$(( $(date +%s) + TTL * 3600 ))
     local ports=()
     [ -n "$port" ] && ports=(-p "127.0.0.1:$port:$port")
+    # limits: at most 4 CPUs / 4 GB, never more than the engine has (Docker refuses)
+    local ncpu mem cpus memory
+    ncpu="$("$e" info --format '{{.NCPU}}' 2>/dev/null || true)"
+    [[ "$ncpu" =~ ^[0-9]+$ ]] || ncpu="$("$e" info --format '{{.Host.CPUs}}' 2>/dev/null || echo 2)"
+    [[ "$ncpu" =~ ^[0-9]+$ ]] || ncpu=2
+    cpus="${DOT_TRY_CPUS:-$(( ncpu < 4 ? ncpu : 4 ))}"
+    mem="$("$e" info --format '{{.MemTotal}}' 2>/dev/null || true)"
+    [[ "$mem" =~ ^[0-9]+$ ]] || mem=$((8 * 1024 * 1024 * 1024))
+    memory="${DOT_TRY_MEMORY:-$(( mem / 2 / 1048576 < 4096 ? mem / 2 / 1048576 : 4096 ))m}"
     "$e" run -d --name "dot-try-$id" --hostname "try-$name" \
         --label dot.try=1 --label "dot.try.repo=$url" --label "dot.try.expires=$expires" \
         --user "$(id -u):$(id -g)" -e HOME=/tmp/home -e npm_config_cache=/tmp/home/.npm -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
         --cap-drop ALL --security-opt no-new-privileges \
-        --pids-limit 1024 --memory "${DOT_TRY_MEMORY:-4g}" --cpus "${DOT_TRY_CPUS:-4}" \
+        --pids-limit 1024 --memory "$memory" --cpus "$cpus" \
         ${ports[@]+"${ports[@]}"} \
         -v "$dir/src:/work" -w /work \
         "$image" sleep infinity >/dev/null \
