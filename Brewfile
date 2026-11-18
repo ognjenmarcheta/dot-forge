@@ -23,7 +23,7 @@ brew "carapace"         # Tab completion for hundreds of CLIs
 brew "just"             # per-project task runner (justfile)
 brew "fx"               # JSON viewer
 brew "xh"               # friendlier curl for APIs
-brew "whisper-cpp"      # push-to-talk: speech to text on this machine
+brew "whisper.cpp"      # push-to-talk: speech to text on this machine
 brew "sox"              # microphone recording for push-to-talk
 
 # editor + friends

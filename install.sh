@@ -206,12 +206,17 @@ install_macos_packages() {
     fi
 
     step "Homebrew packages"
+    # a fresh shell may not have brew on PATH yet even though it's installed
+    load_brew() {
+        if [ -x /opt/homebrew/bin/brew ]; then eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [ -x /usr/local/bin/brew ]; then eval "$(/usr/local/bin/brew shellenv)"; fi
+    }
+    have brew || load_brew
     if ! have brew; then
         warn "Homebrew not found — installing it (official installer)"
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        load_brew
     fi
-    [ -x /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)"
-    [ -x /usr/local/bin/brew ] && eval "$(/usr/local/bin/brew shellenv)"
     if [ "$UPGRADE" -eq 1 ]; then brew update && brew upgrade || warn "brew upgrade had problems"; fi
     if brew bundle --file="$DOTFILES/Brewfile"; then
         ok "Brewfile installed"
@@ -528,8 +533,24 @@ setup_gh() {
 install_nvim_plugins() {
     have nvim || { warn "nvim not found — skipping plugins"; return 0; }
     step "Neovim plugins (versions pinned in lazy-lock.json; takes a few minutes)"
+    local lock="$CONFIG_HOME/nvim/lazy-lock.json" saved
+    saved="$(mktemp)"
+    cp "$lock" "$saved"
     nvim --headless "+Lazy! restore" +qa >/dev/null 2>&1 || true
-    ok "done — open nvim once; Mason then installs the language servers"
+    if ! cmp -s "$saved" "$lock"; then
+        # A fresh install of all plugins at once can leave one on another
+        # commit (seen with LuaSnip on macOS) and rewrite the lockfile. Put the
+        # lockfile back and restore again.
+        cp "$saved" "$lock"
+        nvim --headless "+Lazy! restore" +qa >/dev/null 2>&1 || true
+    fi
+    if cmp -s "$saved" "$lock"; then
+        ok "done — open nvim once; Mason then installs the language servers"
+    else
+        cp "$saved" "$lock"
+        warn "some plugins are not on their lazy-lock.json commits — open nvim and run :PluginsRestore"
+    fi
+    rm -f "$saved"
 }
 
 setup_night_shift() {
