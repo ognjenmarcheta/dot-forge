@@ -97,8 +97,10 @@ if git config --get user.email >/dev/null; then ok "identity: $(git config --get
 # Run an interactive shell, collect stderr minus job-control noise (no tty in CI).
 shell_check() { # shell  script
     local sh="$1" script="$2" err
+    # (also: bash 3.2's readline prints ESC[?1034h, atuin's `stty -g` needs a tty)
     err=$(TERM=xterm-256color "$sh" -ic "$script" 2>&1 >/dev/null </dev/null \
-        | grep -vE 'job control|cannot set terminal process group|Inappropriate ioctl|no job control' || true)
+        | sed $'s/\033\\[?1034h//g' \
+        | grep -vE "job control|cannot set terminal process group|Inappropriate ioctl|no job control|stty: stdin isn't a terminal|^$" || true)
     printf '%s' "$err"
 }
 
