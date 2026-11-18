@@ -30,6 +30,14 @@ WezTerm  (leader = Alt+q, then the key)
                       shell when there's no pane that way, so Ctrl+L still clears)
   Alt+h/j/k/l         resize panes / Neovim splits
   Ctrl+click          open a link inside nvim / lazygit / btop
+  Leader p            projects in ~/Github → workspace with shell / nvim / lazygit tabs
+  Shift+↑ / Shift+↓   jump to the previous / next command (like Warp blocks)
+  Leader y            copy the last command's output     triple-click  select an output
+  Leader Space        label URLs, paths, hashes, IPs, HELU-123… → type the label to copy
+  Leader u            same, for URLs → opens it
+  Ctrl+Shift+P        command palette (projects, rename tab, edit dotfiles…)
+  Ctrl+Shift+U        emoji / symbol picker
+  ● / ✓ on a tab      Claude Code is waiting for you / finished there
 
 Shell
   z <name> / z <Tab>  jump to a frequent folder / pick from a menu
@@ -37,7 +45,12 @@ Shell
   Ctrl+R              atuin history search        Ctrl+T  insert a file   Alt+C  cd into a folder
   rgf <text>          search file contents, open the hit in nvim
   ll / lt             list with git status / tree   (entries are clickable)
-  ai <request>        shell command from Claude    ai explain <cmd>   ai fix
+  ai <request>        shell command from Claude    ai explain <cmd>
+  ai fix              right after a failure: reads the error on screen, suggests a fix
+  Ctrl+G              navi: saved commands with blanks to fill in (~/.config/navi/cheats)
+  tldr <cmd>          short examples instead of the man page
+  Tab                 completions for gh, docker, kubectl, npm… (carapace)
+  just / fx / xh      task runner / JSON viewer / friendlier curl
   dot …               this tool
 
 Prompt

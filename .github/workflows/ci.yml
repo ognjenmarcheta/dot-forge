@@ -30,6 +30,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck zsh lua5.4 python3-yaml >/dev/null
       - run: bash tests/lint.sh
+      - name: WezTerm config loads (same version as the Flatpak, else nightly)
+        run: |
+          base=https://github.com/wez/wezterm/releases/download
+          curl -fsSL -o "$RUNNER_TEMP/wezterm.deb" "$base/20240203-110809-5046fc22/wezterm-20240203-110809-5046fc22.Ubuntu22.04.deb"
+          if ! sudo apt-get install -y -qq "$RUNNER_TEMP/wezterm.deb" >/dev/null 2>&1; then
+            echo "stable .deb doesn't install on this Ubuntu — using the nightly build"
+            curl -fsSL -o "$RUNNER_TEMP/wezterm.deb" "$base/nightly/wezterm-nightly.Ubuntu$(. /etc/os-release; echo "$VERSION_ID").deb"
+            sudo apt-get install -y -qq "$RUNNER_TEMP/wezterm.deb" >/dev/null
+          fi
+          bash tests/wezterm-config.sh
 
   linux-install:
     needs: lint

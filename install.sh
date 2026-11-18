@@ -158,6 +158,7 @@ install_release_bin() { # name repo asset-regex  (binary named <name> inside the
     case "$file" in
         *.tar.gz|*.tgz) tar -xzf "$file" -C "$dir" ;;
         *.zip) unzip -q -o "$file" -d "$dir" ;;
+        *) mv "$file" "$dir/$name"; chmod +x "$dir/$name" ;;   # a bare binary (tealdeer, fx)
     esac
     find "$dir" -type f \( -name "$name" -o -name ya \) -perm -u+x -exec install -m 755 {} "$BIN/" \;
     rm -rf "$dir"
@@ -273,6 +274,12 @@ install_linux_packages() {
     install_release_bin delta    dandavison/delta   "delta-.*-${a}-unknown-linux-musl\.tar\.gz$"
     install_release_bin dust     bootandy/dust      "dust-v.*-${a}-unknown-linux-musl\.tar\.gz$"
     install_release_bin mise     jdx/mise           "mise-v.*-linux-$([ "$a" = x86_64 ] && echo x64 || echo arm64)-musl\.tar\.gz$"
+    install_release_bin tldr     dbrgn/tealdeer     "tealdeer-linux-${a}-musl$"
+    install_release_bin navi     denisidoro/navi    "navi-v.*-${a}-unknown-linux-$([ "$a" = x86_64 ] && echo musl || echo gnu)\.tar\.gz$"
+    install_release_bin carapace carapace-sh/carapace-bin "carapace-bin_.*_linux_${go_arch}\.tar\.gz$"
+    install_release_bin just     casey/just         "just-.*-${a}-unknown-linux-musl\.tar\.gz$"
+    install_release_bin fx       antonmedv/fx       "fx_linux_${go_arch}$"
+    install_release_bin xh       ducaale/xh         "xh-v.*-${a}-unknown-linux-musl\.tar\.gz$"
 
     [ "$IN_CI" -eq 1 ] && return 0
     step "WezTerm"
@@ -328,8 +335,40 @@ setup_tools() {
         export PATH="${MISE_DATA_DIR:-$HOME/.local/share/mise}/shims:$PATH"
         if mise install -y >/dev/null 2>&1; then ok "mise: $(mise ls --current 2>/dev/null | awk '{printf "%s@%s ", $1, $2}')"; else warn "mise install failed — run \`mise install\`"; fi
     fi
+    if have tldr; then
+        if tldr --update >/dev/null 2>&1; then ok "tldr: pages downloaded"; else warn "tldr pages not downloaded — run \`tldr --update\`"; fi
+    fi
     if have atuin && [ ! -f "$HOME/.local/share/atuin/history.db" ]; then
         if atuin import auto >/dev/null 2>&1; then ok "atuin: imported your shell history"; else warn "atuin import failed — run \`atuin import auto\`"; fi
+    fi
+}
+
+setup_claude_hooks() {
+    # Claude Code tells WezTerm when it waits for you / finishes (tab ● + toast).
+    # Merged into ~/.claude/settings.json; your other settings stay untouched.
+    have jq || { warn "jq missing — skipped Claude Code alert hooks"; return 0; }
+    step "Claude Code alerts (hooks in ~/.claude/settings.json)"
+    local f="$HOME/.claude/settings.json" tmp cmd='$HOME/.config/scripts/agent-notify'
+    mkdir -p "$HOME/.claude"
+    [ -s "$f" ] || echo '{}' > "$f"
+    tmp="$(mktemp)"
+    if ! jq --arg c "$cmd" '
+        def ours: (.command // "") | test("agent-notify");
+        def without_ours: map(.hooks |= map(select(ours | not))) | map(select(.hooks | length > 0));
+        def add($state): without_ours + [{hooks: [{type: "command", command: ($c + " " + $state)}]}];
+        .hooks = (.hooks // {})
+        | .hooks.Notification = ((.hooks.Notification // []) | add("waiting"))
+        | .hooks.Stop = ((.hooks.Stop // []) | add("done"))
+        | .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | add("working"))
+    ' "$f" > "$tmp"; then
+        rm -f "$tmp"; warn "$(tilde "$f") isn't valid JSON — skipped"; return 0
+    fi
+    if cmp -s "$tmp" "$f"; then
+        rm -f "$tmp"; ok "already set up"
+    else
+        cp "$f" "$f.dotfiles-bak"
+        cat "$tmp" > "$f" && rm -f "$tmp"
+        ok "Notification / Stop / UserPromptSubmit -> agent-notify (old file: settings.json.dotfiles-bak)"
     fi
 }
 
@@ -384,6 +423,7 @@ main() {
         install_bash_preexec
         install_claude_code
         setup_tools
+        setup_claude_hooks
         setup_git_identity
         setup_gh
         have zsh && ! grep -qF '.config/shell/aliases.sh' "$HOME/.zshrc" 2>/dev/null && hook_shell   # zsh was just installed

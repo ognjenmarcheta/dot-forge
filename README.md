@@ -68,12 +68,24 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   moves between WezTerm panes *and* Neovim splits (Alt+h/j/k/l resizes);
   Leader w / W = switch / new workspace. A toast pops up when a command that
   ran 30s+ finishes while you're in another window (`DOT_NOTIFY_AFTER=0` = off).
+- **Warp / kitty / Ghostty extras** (WezTerm): Shift+↑/↓ jumps between
+  commands, Leader y copies the last output, triple-click selects one;
+  Leader Space labels URLs / paths / hashes / IPs / issue keys to copy with two
+  keystrokes; Leader p opens a project from `~/Github` as its own workspace
+  (shell, nvim, lazygit tabs); Ctrl+Shift+P palette; Ctrl+Shift+U emoji picker.
+  New tabs and splits open in the current folder.
+- **Claude Code alerts**: a ● on the tab (and a toast if you're elsewhere)
+  when Claude waits for you, ✓ when it's done — via hooks that install.sh adds
+  to `~/.claude/settings.json`.
 - **Prompt**: Starship with clickable user / path segments / git branch; `↑` = `cd ..`.
 - **Shell**: `ls`/`ll` via eza (icons, git status, clickable), `cat`/`man` via bat,
   `z` + Tab menu of frequent folders, Ctrl+R = atuin history, Ctrl+T / Alt+C =
   fzf file / folder, `rgf <text>` = search and open the hit in nvim, `y` = yazi.
 - **`ai`**: `ai <request>` → a shell command from Claude Code (asks before
-  running), `ai explain <cmd>`, `ai fix` (after a command failed).
+  running), `ai explain <cmd>`, `ai fix` (after a command failed — in WezTerm
+  it also sends Claude the error that's on screen).
+- **More tools**: `tldr`, navi (Ctrl+G, cheats in `config/navi/cheats` — adb,
+  docker, kubectl, git, system), carapace completions, `just`, `fx`, `xh`.
 - **git**: delta diffs (also in lazygit), zdiff3 conflicts, rerere, `git lg`,
   `git recent`, `git undo`.
 - **mise**: node LTS, pnpm, uv globally; projects' `.nvmrc` / `mise.toml` win.

@@ -1,0 +1,29 @@
+% git, github
+
+# Undo the last commit, keep the changes staged
+git reset --soft HEAD~1
+
+# Throw away all local changes to one file
+git restore -- <file>
+
+# Which commit introduced a string
+git log -S '<text>' --oneline
+
+# Find the commit that broke something
+git bisect start && git bisect bad && git bisect good <good_commit>
+
+# Delete local branches already merged into main
+git branch --merged main | grep -vE '^\*|\bmain\b' | xargs -r git branch -d
+
+# Check out a pull request
+gh pr checkout <pr>
+
+# Open the repo in the browser
+gh browse
+
+# Re-run the failed jobs of the latest CI run
+gh run rerun $(gh run list -L1 --json databaseId -q '.[0].databaseId') --failed
+
+$ file: git status --porcelain | awk '{print $2}'
+$ good_commit: git log --oneline -30 --- --column 1
+$ pr: gh pr list --json number,title -q '.[] | "\(.number)\t\(.title)"' --- --column 1 --delimiter '\t'

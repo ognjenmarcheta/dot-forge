@@ -139,6 +139,9 @@ export GITHUB_USER="${GITHUB_USER:-ognjenmarcheta}"
 # --- Notification when a long command finishes (WezTerm toast) ----------------
 [ -f "$HOME/.config/shell/notify.sh" ] && . "$HOME/.config/shell/notify.sh"
 
+# --- Prompt / output marks + current folder for WezTerm (Warp-style blocks) ---
+[ -f "$HOME/.config/shell/marks.sh" ] && . "$HOME/.config/shell/marks.sh"
+
 # --- ai: plain-English -> shell command via Claude Code ----------------------
 [ -f "$HOME/.config/shell/ai.sh" ] && . "$HOME/.config/shell/ai.sh"
 
@@ -149,6 +152,27 @@ if _dot_has atuin; then
         [[ -o zle ]] && eval "$(atuin init zsh --disable-up-arrow)"
     elif [ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]; then
         eval "$(atuin init bash --disable-up-arrow)"
+    fi
+fi
+
+# --- carapace: Tab completion for hundreds of CLIs (gh, docker, kubectl…) -----
+if _dot_has carapace; then
+    export CARAPACE_BRIDGES='zsh,bash'   # fall back to the shell's own completions
+    if [ -n "$ZSH_VERSION" ]; then
+        eval "$(carapace _carapace zsh)"
+    elif [ -n "$BASH_VERSION" ]; then
+        eval "$(carapace _carapace bash)"
+    fi
+fi
+
+# --- navi: Ctrl+G = saved commands with blanks to fill in (~/.config/navi) ----
+if _dot_has navi; then
+    export NAVI_CONFIG="$HOME/.config/navi/config.yaml"
+    export NAVI_PATH="${NAVI_PATH:-$HOME/.config/navi/cheats}"
+    if [ -n "$ZSH_VERSION" ]; then
+        [[ -o zle && -t 0 ]] && eval "$(navi widget zsh)"
+    elif [ -n "$BASH_VERSION" ]; then
+        eval "$(navi widget bash)"
     fi
 fi
 
