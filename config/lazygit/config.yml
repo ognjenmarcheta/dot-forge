@@ -22,9 +22,8 @@ gui:
       - "#ffbd5e"
     defaultFgColor:
       - "#ffffff"
-
 # Syntax-highlighted diffs (needs `delta`, installed by install.sh)
 git:
-  pagers:
+  diffRenderers:
     - colorArg: always
-      pager: delta --dark --paging=never
+      command: delta --dark --paging=never
