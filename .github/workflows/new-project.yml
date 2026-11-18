@@ -37,6 +37,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/home/Github"
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/home/.config" >> "$GITHUB_ENV"
+      - name: git identity in the new home (HOME changes from this step on)
+        run: |
           git config --global user.name "dot new CI"
           git config --global user.email "ci@example.com"
           git config --global init.defaultBranch main
