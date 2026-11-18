@@ -87,7 +87,8 @@ if _dot_has fzf; then
     export FZF_CTRL_T_OPTS="--preview 'bat --color=always --style=numbers --line-range=:300 {} 2>/dev/null || cat {}'"
     export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --icons=always --color=always {} 2>/dev/null || ls {}'"
     if [ -n "$ZSH_VERSION" ]; then
-        eval "$(fzf --zsh 2>/dev/null)"
+        # key bindings need the line editor (off when zsh has no terminal, e.g. CI)
+        [[ -o zle ]] && eval "$(fzf --zsh 2>/dev/null)"
     else
         eval "$(fzf --bash 2>/dev/null)"
     fi
@@ -144,7 +145,7 @@ export GITHUB_USER="${GITHUB_USER:-ognjenmarcheta}"
 # Up arrow stays plain history. bash needs bash-preexec (loaded above).
 if _dot_has atuin; then
     if [ -n "$ZSH_VERSION" ]; then
-        eval "$(atuin init zsh --disable-up-arrow)"
+        [[ -o zle ]] && eval "$(atuin init zsh --disable-up-arrow)"
     elif [ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]; then
         eval "$(atuin init bash --disable-up-arrow)"
     fi
