@@ -63,6 +63,16 @@ for t in tldr navi carapace just fx xh jq; do
     if have "$t"; then ok "$t"; else bad "$t missing"; fi
 done
 have claude || warn "claude (Claude Code) not installed — \`ai\` won't work"
+if have zsh; then
+    for plug in zsh-autosuggestions zsh-syntax-highlighting fzf-tab; do
+        if [ -d "$HOME/.local/share/zsh-plugins/$plug" ]; then ok "zsh: $plug"; else bad "zsh: $plug missing"; fi
+    done
+fi
+if [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/session" ]; then ok "atuin history sync on"; else warn "history not synced between machines — run: dot sync-history"; fi
+if [ "$OS" = Linux ] && [ -z "${CI:-}" ]; then
+    if [ -x /usr/bin/wezterm ]; then ok "WezTerm (regular build — sessions survive closing the window)"
+    else warn "WezTerm isn't the regular build (Flatpak?) — re-run install.sh"; fi
+fi
 if grep -q agent-notify "$HOME/.claude/settings.json" 2>/dev/null; then ok "Claude Code alert hooks"; else warn "Claude Code alert hooks not set up (run install.sh)"; fi
 
 head_ "git"

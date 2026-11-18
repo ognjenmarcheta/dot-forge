@@ -20,3 +20,9 @@ config/nvim/lazy-lock.before-fix.json
 # per-machine, never committed
 config/git/local
 config/shell/local.sh
+
+# per-machine WezTerm settings
+config/wezterm/machine.lua
+config/shell/zsh/.zcompdump*
+config/shell/zsh/.zsh_history
+config/shell/zsh/.zsh_sessions/

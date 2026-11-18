@@ -25,6 +25,7 @@ OS="${DOTFILES_OS:-$(uname -s)}"   # DOTFILES_OS: override for testing only
 ARCH="$(uname -m)"
 NVIM_VERSION="0.11.6"              # the Neovim this config is tested with
 BASH_PREEXEC_VERSION="0.7.0"
+ZSH_PLUGINS="zsh-users/zsh-autosuggestions@v0.7.1 zsh-users/zsh-syntax-highlighting@0.8.0 Aloxaf/fzf-tab@v1.3.0"
 LINKS_ONLY=0
 NVIM_PLUGINS=1
 UPGRADE=0
@@ -253,7 +254,7 @@ install_linux_packages() {
     sudo apt-get $APT_OPTS update -qq
     apt_install git curl unzip build-essential zsh \
         ripgrep fd-find jq btop lazygit fastfetch thefuck \
-        wl-clipboard libnotify-bin duf
+        wl-clipboard libnotify-bin duf gnupg
     # yazi previews: big (ghostscript, ffmpeg libs…), and nothing to test in CI
     [ "$IN_CI" -eq 1 ] || apt_install ffmpegthumbnailer poppler-utils imagemagick 7zip
     have node || apt_install nodejs npm    # Mason language servers, Copilot, mcphub
@@ -281,22 +282,53 @@ install_linux_packages() {
     install_release_bin fx       antonmedv/fx       "fx_linux_${go_arch}$"
     install_release_bin xh       ducaale/xh         "xh-v.*-${a}-unknown-linux-musl\.tar\.gz$"
 
-    [ "$IN_CI" -eq 1 ] && return 0
-    step "WezTerm"
-    if have wezterm || { have flatpak && flatpak info org.wezfurlong.wezterm >/dev/null 2>&1; }; then
-        ok "WezTerm already installed"
-    elif have flatpak; then
-        if flatpak install -y flathub org.wezfurlong.wezterm; then ok "WezTerm installed (Flatpak)"; else warn "WezTerm Flatpak install failed"; fi
+    step "WezTerm (official apt repository)"
+    # The regular build, not the Flatpak: its background session server keeps
+    # your tabs alive when the window closes (the Flatpak sandbox can't).
+    if [ -f "$BIN/wezterm" ] && grep -q "org.wezfurlong.wezterm" "$BIN/wezterm" 2>/dev/null; then
+        rm -f "$BIN/wezterm"; hash -r   # old Flatpak wrapper would hide the real one
+    fi
+    if dpkg -s wezterm >/dev/null 2>&1 || dpkg -s wezterm-nightly >/dev/null 2>&1; then
+        if [ "$UPGRADE" -eq 1 ]; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install --only-upgrade -y wezterm >/dev/null 2>&1 || true
+        fi
+        ok "$(wezterm --version 2>/dev/null)"
     else
-        warn "install WezTerm: https://wezterm.org/install/linux.html"
+        if [ ! -f /etc/apt/sources.list.d/wezterm.list ]; then
+            # https://wezterm.org/install/linux.html
+            curl -fsSL https://apt.fury.io/wez/gpg.key | sudo gpg --yes --dearmor -o /usr/share/keyrings/wezterm-fury.gpg
+            echo 'deb [signed-by=/usr/share/keyrings/wezterm-fury.gpg] https://apt.fury.io/wez/ * *' \
+                | sudo tee /etc/apt/sources.list.d/wezterm.list >/dev/null
+            sudo chmod 644 /usr/share/keyrings/wezterm-fury.gpg
+            sudo apt-get $APT_OPTS update -qq
+        fi
+        if sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install -y wezterm >/dev/null; then
+            hash -r; ok "$(wezterm --version 2>/dev/null) installed"
+        else
+            warn "WezTerm install failed — see https://wezterm.org/install/linux.html"
+        fi
     fi
-    # `wezterm` command for the Flatpak build: smart-splits.nvim calls
-    # `wezterm cli` to move from a Neovim split into the next WezTerm pane.
-    if ! have wezterm && have flatpak && flatpak info org.wezfurlong.wezterm >/dev/null 2>&1; then
-        printf '#!/bin/sh\nexec flatpak run --command=wezterm org.wezfurlong.wezterm "$@"\n' > "$BIN/wezterm"
-        chmod +x "$BIN/wezterm"
-        ok "$(tilde "$BIN/wezterm") -> the WezTerm Flatpak"
+    wezterm_desktop_entry
+    if have flatpak && flatpak info org.wezfurlong.wezterm >/dev/null 2>&1; then
+        warn "the WezTerm Flatpak is still installed — open the regular WezTerm from now on;"
+        warn "  remove the Flatpak when happy: flatpak uninstall org.wezfurlong.wezterm"
     fi
+}
+
+wezterm_desktop_entry() {
+    # The app launcher runs `wezterm start`, which never attaches to the session
+    # server; our copy of the launcher entry runs `wezterm connect unix` instead.
+    # (Turned off by persistent_sessions = false in ~/.config/wezterm/machine.lua.)
+    local sys=/usr/share/applications/org.wezfurlong.wezterm.desktop
+    local mine="$HOME/.local/share/applications/org.wezfurlong.wezterm.desktop"
+    if grep -qs 'persistent_sessions *= *false' "$CONFIG_HOME/wezterm/machine.lua"; then
+        if grep -qs 'connect unix' "$mine"; then rm -f "$mine"; ok "launcher: plain WezTerm (sessions off)"; fi
+        return 0
+    fi
+    [ -f "$sys" ] || return 0
+    mkdir -p "$(dirname "$mine")"
+    sed -E 's|^Exec=wezterm start.*|Exec=wezterm connect unix|' "$sys" > "$mine"
+    ok "launcher opens your saved session (wezterm connect unix)"
 }
 
 install_claude_code() {
@@ -325,6 +357,56 @@ install_bash_preexec() {
     else
         rm -f "$file.tmp"; warn "bash-preexec download failed — atuin and notifications stay off in bash"
     fi
+}
+
+install_zsh_plugins() {
+    have zsh || return 0
+    step "zsh plugins (autosuggestions, syntax highlighting, fzf-tab)"
+    local dir="$HOME/.local/share/zsh-plugins" spec repo tag name
+    mkdir -p "$dir"
+    for spec in $ZSH_PLUGINS; do
+        repo="${spec%@*}"; tag="${spec#*@}"; name="${repo#*/}"
+        if [ "$(git -C "$dir/$name" describe --tags --exact-match 2>/dev/null)" = "$tag" ]; then
+            ok "$name $tag"; continue
+        fi
+        rm -rf "${dir:?}/$name"
+        if git clone -q --depth 1 --branch "$tag" "https://github.com/$repo.git" "$dir/$name" 2>/dev/null; then
+            ok "$name $tag"
+        else
+            warn "$name download failed"
+        fi
+    done
+}
+
+login_shell() {
+    if [ "$OS" = Darwin ]; then
+        dscl . -read "$HOME" UserShell 2>/dev/null | awk '{print $2}'
+    else
+        getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7
+    fi
+}
+
+setup_default_shell() {
+    have zsh || return 0
+    local zsh_path ans
+    zsh_path="$(command -v zsh)"
+    case "$(login_shell)" in */zsh) return 0 ;; esac
+    [ "$IN_CI" -eq 1 ] && return 0
+    step "Default shell"
+    if [ ! -t 0 ]; then warn "make zsh your default shell with: chsh -s $zsh_path"; return 0; fi
+    printf '  Make zsh your default shell (suggestions as you type, highlighting)? [Y/n] '
+    read -r ans || ans=n
+    case "$ans" in
+        n|N|no|No) ok "keeping $(basename "$(login_shell)")" ;;
+        *)
+            grep -qx "$zsh_path" /etc/shells 2>/dev/null || echo "$zsh_path" | sudo tee -a /etc/shells >/dev/null
+            if chsh -s "$zsh_path"; then
+                ok "zsh is your login shell from your next login (WezTerm uses it right away)"
+            else
+                warn "chsh failed — run: chsh -s $zsh_path"
+            fi
+            ;;
+    esac
 }
 
 setup_tools() {
@@ -421,10 +503,12 @@ main() {
         if [ "$OS" = Darwin ]; then install_macos_packages; else install_linux_packages; fi
         install_neovim
         install_bash_preexec
+        install_zsh_plugins
         install_claude_code
         setup_tools
         setup_claude_hooks
         setup_git_identity
+        setup_default_shell
         setup_gh
         have zsh && ! grep -qF '.config/shell/aliases.sh' "$HOME/.zshrc" 2>/dev/null && hook_shell   # zsh was just installed
         [ "$NVIM_PLUGINS" -eq 1 ] && install_nvim_plugins

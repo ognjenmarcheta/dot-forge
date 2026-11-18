@@ -8,8 +8,15 @@
 --   Ctrl+Shift+P   command palette (with the entries below added)
 --   Ctrl+Shift+U   emoji / symbol picker
 -- Plus: ● on a tab when Claude Code is waiting for you (hooks call
--- ~/.config/scripts/agent-notify), and the screen text for `ai fix`.
--- Needs the shell marks from ~/.config/shell/marks.sh.
+-- ~/.config/scripts/agent-notify), the screen text for `ai fix`, a colour per
+-- git project (tab stripe, badge, tinted tab bar) and sessions that survive
+-- closing the window. Needs the shell marks from ~/.config/shell/marks.sh.
+--
+-- Per-machine settings (not committed): ~/.config/wezterm/machine.lua, e.g.
+--   return {
+--     persistent_sessions = false,                 -- default true
+--     project_colors = { ["kaine-forge"] = "#f5a97f" },
+--   }
 
 local wezterm = require("wezterm")
 local act = wezterm.action
@@ -19,6 +26,10 @@ local M = {}
 
 local home = wezterm.home_dir
 local is_flatpak = os.getenv("FLATPAK_ID") ~= nil
+
+local ok_machine, machine = pcall(require, "machine")
+if not ok_machine or type(machine) ~= "table" then machine = {} end
+M.machine = machine
 
 local function host_cmd(args)
     if not is_flatpak then return args end
@@ -134,13 +145,15 @@ local function open_project(window, pane, path)
     local q = shell_quote(path)
     -- cwd is passed too, but `cd` makes sure even when the shell runs on the
     -- host through the Flatpak sandbox
-    local tab, shell_pane, mwin = mux.spawn_window { workspace = name, cwd = path }
+    -- same domain as where you are (the session server when it's on)
+    local domain = { DomainName = pane:get_domain_name() }
+    local tab, shell_pane, mwin = mux.spawn_window { workspace = name, cwd = path, domain = domain }
     tab:set_title(name)
     shell_pane:send_text(" cd -- " .. q .. " && clear\n")
-    local nvim_tab, nvim_pane = mwin:spawn_tab { cwd = path }
+    local nvim_tab, nvim_pane = mwin:spawn_tab { cwd = path, domain = domain }
     nvim_tab:set_title("nvim")
     nvim_pane:send_text(" cd -- " .. q .. " && nvim .\n")
-    local git_tab, git_pane = mwin:spawn_tab { cwd = path }
+    local git_tab, git_pane = mwin:spawn_tab { cwd = path, domain = domain }
     git_tab:set_title("git")
     git_pane:send_text(" cd -- " .. q .. " && lazygit\n")
     tab:activate()
@@ -221,6 +234,100 @@ function M.clear_seen(window)
     if pane then wezterm.GLOBAL.agent[tostring(pane:pane_id())] = nil end
 end
 
+-- ------------------------------------------------- project colours -----
+
+local project_palette = {
+    "#f5a97f", "#a6da95", "#8aadf4", "#c6a0f6", "#f5bde6",
+    "#eed49f", "#8bd5ca", "#ed8796", "#91d7e3", "#f0c6c6",
+}
+local root_cache = {}
+
+-- folder from OSC 7 (marks.sh): Url object (newer WezTerm) or a file:// string
+local function cwd_of(cwd)
+    if not cwd then return nil end
+    if type(cwd) ~= "string" then
+        local ok, p = pcall(function() return cwd.file_path end)
+        return ok and p or nil
+    end
+    local p = cwd:gsub("^file://[^/]*", "")
+    return (p:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+local function git_root(dir)
+    if not dir or dir == "" then return nil end
+    dir = dir:gsub("/+$", "")
+    if root_cache[dir] ~= nil then return root_cache[dir] or nil end
+    local d = dir
+    while d and d ~= "" and d ~= home do
+        if #wezterm.glob(d .. "/.git") > 0 then
+            root_cache[dir] = d
+            return d
+        end
+        d = d:match("^(.*)/[^/]*$")
+    end
+    root_cache[dir] = false
+    return nil
+end
+
+local function color_for(name)
+    local custom = machine.project_colors and machine.project_colors[name]
+    if custom then return custom end
+    local h = 0
+    for i = 1, #name do h = (h * 31 + name:byte(i)) % 2147483647 end
+    return project_palette[(h % #project_palette) + 1]
+end
+
+-- name, colour of the git project a pane is in (cwd: Url, string or nil)
+function M.project(cwd)
+    local root = git_root(cwd_of(cwd))
+    if not root then return nil, nil end
+    local name = basename(root)
+    return name, color_for(name)
+end
+
+local function blend(hex, base, amount)
+    local function rgb(h)
+        h = h:gsub("#", "")
+        return tonumber(h:sub(1, 2), 16), tonumber(h:sub(3, 4), 16), tonumber(h:sub(5, 6), 16)
+    end
+    local r1, g1, b1 = rgb(hex)
+    local r2, g2, b2 = rgb(base)
+    local function mix(a, b) return math.floor(b + (a - b) * amount + 0.5) end
+    return string.format("#%02x%02x%02x", mix(r1, r2), mix(g1, g2), mix(b1, b2))
+end
+
+local base_colors -- config.colors as written in config.lua (set in apply)
+local function copy(t)
+    if type(t) ~= "table" then return t end
+    local c = {}
+    for k, v in pairs(t) do c[k] = copy(v) end
+    return c
+end
+
+-- Called from update-status: badge with the project + tab bar tinted in its colour
+function M.project_status(window, pane)
+    local name, color = M.project(pane:get_current_working_dir())
+    local base_bg = (base_colors and base_colors.tab_bar and base_colors.tab_bar.background) or "#1f2330"
+    local want = color and blend(color, base_bg, 0.22) or base_bg
+    local overrides = window:get_config_overrides() or {}
+    local current = overrides.colors and overrides.colors.tab_bar and overrides.colors.tab_bar.background
+    if current ~= want and not (current == nil and want == base_bg) then
+        local colors = copy(base_colors) or {}
+        colors.tab_bar = colors.tab_bar or {}
+        colors.tab_bar.background = want
+        overrides.colors = colors
+        window:set_config_overrides(overrides)
+    end
+    if not name then return {} end
+    return {
+        { Background = { Color = color } },
+        { Foreground = { Color = "#1e2030" } },
+        { Attribute = { Intensity = "Bold" } },
+        { Text = " " .. name .. " " },
+        "ResetAttributes",
+    }
+end
+
 -- ---------------------------------------------------- user vars -----
 
 local function write_private_file(path, text)
@@ -292,7 +399,7 @@ wezterm.on("augment-command-palette", function(window, pane)
             brief = "Edit dotfiles",
             icon = "md_cog",
             action = wezterm.action_callback(function(win, p)
-                local tab, new_pane = win:mux_window():spawn_tab {}
+                local tab, new_pane = win:mux_window():spawn_tab { domain = { DomainName = p:get_domain_name() } }
                 tab:set_title("dotfiles")
                 new_pane:send_text(' cd -- "$(dot dir)" && nvim .\n')
             end),
@@ -301,7 +408,7 @@ wezterm.on("augment-command-palette", function(window, pane)
             brief = "Show keyboard cheat sheet  (dot keys)",
             icon = "md_keyboard",
             action = wezterm.action_callback(function(win, p)
-                local tab, new_pane = win:mux_window():spawn_tab {}
+                local tab, new_pane = win:mux_window():spawn_tab { domain = { DomainName = p:get_domain_name() } }
                 tab:set_title("keys")
                 new_pane:send_text(" dot keys | less -R; exit\n")
             end),
@@ -313,6 +420,16 @@ end)
 -- ---------------------------------------------------- apply -----
 
 function M.apply(config)
+    base_colors = copy(config.colors)
+
+    -- Sessions that survive closing the window: tabs run in a background
+    -- session server ("unix" domain) and the window just attaches to it.
+    -- Not in the Flatpak, whose sandbox stops with the window.
+    if machine.persistent_sessions ~= false and not is_flatpak then
+        config.unix_domains = { { name = "unix" } }
+        config.default_gui_startup_args = { "connect", "unix" }
+    end
+
     config.keys = config.keys or {}
     local keys = {
         prompt_jump("UpArrow", -1),
