@@ -6,14 +6,29 @@ agent skills, and the `ai` command.
 
 ## New machine
 
+The repo is private, so log in to GitHub first.
+
+**macOS**
 ```bash
-git clone https://github.com/ognjenmarcheta/dotfiles.git ~/Github/dotfiles
+xcode-select --install                     # git + compilers (wait for it to finish)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+eval "$(/opt/homebrew/bin/brew shellenv)" && brew install gh
+gh auth login
+gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
+~/Github/dotfiles/install.sh
+```
+
+**Linux (Ubuntu/Debian)**
+```bash
+sudo apt install -y git gh
+gh auth login
+gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
 ~/Github/dotfiles/install.sh
 ```
 
 Then open a new WezTerm window and redo the logins that are deliberately not
-stored here: `gh auth login`, `claude` (for `ai`), `:Copilot auth` in Neovim,
-and `atuin login` if you use sync.
+stored here: `claude` (for `ai`), `:Copilot auth` in Neovim, and `atuin login`
+if you use sync.
 
 `install.sh --links-only` skips package installs and only links configs.
 Running it again is safe: anything it replaces goes to `~/.dotfiles-backup/<time>/`.
@@ -30,7 +45,10 @@ Because configs are symlinks, editing `~/.config/wezterm/config.lua` edits this
 repo — commit and push to keep machines in sync.
 
 Packages: Homebrew (`Brewfile`) on macOS; apt + official GitHub releases into
-`~/.local/bin` on Linux. Neovim is kept on 0.11.x, which this config is tested with.
+`~/.local/bin` on Linux. On both, Neovim is pinned to **0.11.6** (official
+release in `~/.local/opt`, linked from `~/.local/bin/nvim`) because the plugin
+versions in `config/nvim/lazy-lock.json` are tested with it — Homebrew's and
+newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 
 ## What you get
 

@@ -130,7 +130,12 @@ ai() {
     local key
     while :; do
         printf '\033[2m[Enter] run  [e] edit  [c] copy  [n] cancel \033[0m'
-        if [ -n "$ZSH_VERSION" ]; then read -rs -k1 key; else IFS= read -rsn1 key; fi
+        # A failed read (no terminal, end of input) must never count as Enter.
+        if [ -n "$ZSH_VERSION" ]; then
+            read -rs -k1 key || { printf '\ncancelled\n'; return 1; }
+        else
+            IFS= read -rsn1 key || { printf '\ncancelled\n'; return 1; }
+        fi
         printf '\n'
         case "$key" in
             ""|$'\n'|$'\r'|y|Y)
@@ -140,9 +145,10 @@ ai() {
                 [ -z "$cmd" ] && return 0
                 break ;;
             c|C)
-                if command -v wl-copy >/dev/null 2>&1; then printf '%s' "$cmd" | wl-copy
+                if command -v pbcopy >/dev/null 2>&1; then printf '%s' "$cmd" | pbcopy
+                elif command -v wl-copy >/dev/null 2>&1; then printf '%s' "$cmd" | wl-copy
                 elif command -v xclip >/dev/null 2>&1; then printf '%s' "$cmd" | xclip -selection clipboard
-                else printf 'ai: no clipboard tool found (install wl-clipboard)\n'; continue; fi
+                else printf 'ai: no clipboard tool found (Linux: install wl-clipboard)\n'; continue; fi
                 printf '\033[2mcopied\033[0m\n'; return 0 ;;
             n|N|q|Q|$'\e')
                 return 0 ;;

@@ -5,6 +5,12 @@
 [ -n "$_SHELL_ALIASES_LOADED" ] && return 0
 _SHELL_ALIASES_LOADED=1
 
+# macOS: some tools (lazygit…) default to ~/Library/Application Support unless
+# XDG_CONFIG_HOME is set; point them at ~/.config. (Linux already uses ~/.config.)
+if [ "$(uname -s)" = Darwin ] && [ -z "${XDG_CONFIG_HOME:-}" ]; then
+    export XDG_CONFIG_HOME="$HOME/.config"
+fi
+
 # --- PATH ---------------------------------------------------------------------
 # install.sh puts CLI tools (starship, zoxide, fzf, yazi, …) in ~/.local/bin on
 # Linux and uses Homebrew on macOS. ~/.config/shell/bin is an older location.
@@ -32,6 +38,9 @@ esac
 # reveals files in Files. "auto" = only when printing to a terminal.
 if ls --hyperlink=auto -d / >/dev/null 2>&1; then
     alias ls='ls --color=auto --hyperlink=auto'
+elif command -v gnuls >/dev/null 2>&1 && gnuls --hyperlink=auto -d / >/dev/null 2>&1; then
+    # Ubuntu 25.10+: `ls` is uutils; GNU ls may be installed as gnuls
+    alias ls='gnuls --color=auto --hyperlink=auto'
 elif command -v gls >/dev/null 2>&1; then
     # macOS: BSD ls has no hyperlinks; GNU ls comes from `brew install coreutils`
     alias ls='gls --color=auto --hyperlink=auto'
@@ -63,6 +72,11 @@ y() {
 
 # --- ai: plain-English -> shell command via Claude Code ----------------------
 [ -f "$HOME/.config/shell/ai.sh" ] && . "$HOME/.config/shell/ai.sh"
+
+# --- zsh: turn on Tab completion (macOS's stock zsh leaves it off) -----------
+if [ -n "$ZSH_VERSION" ] && ! (( ${+functions[compdef]} )); then
+    autoload -Uz compinit && compinit -i
+fi
 
 # --- zoxide (z) — keep last: it hooks the prompt set up above --------------------------------------------------------------
 if command -v zoxide >/dev/null 2>&1; then
