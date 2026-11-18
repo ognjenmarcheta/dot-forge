@@ -82,7 +82,9 @@ fi
 if grep -q agent-notify "$HOME/.claude/settings.json" 2>/dev/null; then ok "Claude Code alert hooks"; else warn "Claude Code alert hooks not set up (run install.sh)"; fi
 if [ -z "${CI:-}" ]; then
     if [ "$OS" = Darwin ]; then
-        if launchctl list 2>/dev/null | grep -q software.byteforge.dot-night; then ok "night shift runs at 01:30 (launchd)"
+        # (not `launchctl list | grep -q`: grep exits early, launchctl gets
+        # SIGPIPE and pipefail turns the match into a failure)
+        if launchctl print "gui/$(id -u)/software.byteforge.dot-night" >/dev/null 2>&1; then ok "night shift runs at 01:30 (launchd)"
         else warn "night shift scheduler off — re-run install.sh (dot night run works by hand)"; fi
     elif have systemctl; then
         if systemctl --user is-enabled dot-night.timer >/dev/null 2>&1; then ok "night shift runs at 01:30 (systemd timer)"
