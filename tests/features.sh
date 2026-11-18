@@ -239,7 +239,7 @@ git -C "$T/Github/dotfiles" push -q origin main
 export DOTFILES_DIR="$T/Github/dotfiles"
 python3 "$S/dot-evolve" --auto >/dev/null
 check "--auto queues a night task with the report" 'grep -q "\"kind\": \"evolve\"" "$XDG_DATA_HOME/dotfiles/night/queue.json" && grep -q "pnpm test --filter api" "$XDG_DATA_HOME/dotfiles/night/queue.json"'
-python3 "$S/dot-evolve" --auto; ls -la "$XDG_STATE_HOME/dotfiles/" >&2; env | grep -i evolve >&2
+python3 "$S/dot-evolve" --auto >/dev/null
 check "only once a week" '[ "$(grep -c "\"kind\": \"evolve\"" "$XDG_DATA_HOME/dotfiles/night/queue.json")" = 1 ]'
 : > "$FAKE_LOG.gh"
 rm -f "$XDG_CACHE_HOME/dotfiles/claude-auth"
