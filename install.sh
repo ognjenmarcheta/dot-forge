@@ -249,8 +249,9 @@ install_linux_packages() {
     sudo apt-get update -qq
     apt_install git curl unzip build-essential zsh \
         ripgrep fd-find jq btop lazygit fastfetch thefuck \
-        ffmpegthumbnailer poppler-utils imagemagick 7zip \
         wl-clipboard libnotify-bin duf
+    # yazi previews: big (ghostscript, ffmpeg libs…), and nothing to test in CI
+    [ "$IN_CI" -eq 1 ] || apt_install ffmpegthumbnailer poppler-utils imagemagick 7zip
     have node || apt_install nodejs npm    # Mason language servers, Copilot, mcphub
     if have fdfind && ! have fd; then ln -sf "$(command -v fdfind)" "$BIN/fd"; ok "fd -> fdfind"; fi
 
