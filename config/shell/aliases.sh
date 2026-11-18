@@ -87,8 +87,9 @@ if _dot_has fzf; then
     export FZF_CTRL_T_OPTS="--preview 'bat --color=always --style=numbers --line-range=:300 {} 2>/dev/null || cat {}'"
     export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --icons=always --color=always {} 2>/dev/null || ls {}'"
     if [ -n "$ZSH_VERSION" ]; then
-        # key bindings need the line editor (off when zsh has no terminal, e.g. CI)
-        [[ -o zle ]] && eval "$(fzf --zsh 2>/dev/null)"
+        # Needs a terminal: fzf's script saves and restores every option, and
+        # restoring `zle` fails without one (CI, `zsh -ic` from a script).
+        [[ -o zle && -t 0 ]] && eval "$(fzf --zsh 2>/dev/null)"
     else
         eval "$(fzf --bash 2>/dev/null)"
     fi
