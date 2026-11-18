@@ -14,7 +14,9 @@ brew "gh"
 brew "jq"
 
 # editor + friends
-brew "neovim"
+# (Neovim itself is NOT from Homebrew: Homebrew ships 0.12, this config is
+#  pinned to 0.11 — install.sh puts Neovim 0.11.6 in ~/.local/bin.)
+brew "node"              # Mason language servers, Copilot, mcphub
 brew "ripgrep"
 brew "fd"
 brew "lazygit"
@@ -23,6 +25,9 @@ brew "ffmpegthumbnailer" # yazi video previews
 brew "poppler"           # yazi PDF previews
 brew "imagemagick"
 brew "sevenzip"
+
+# AI coding agents
+brew "opencode"          # OpenCode CLI (used by the opencode.nvim plugin)
 
 # misc CLI
 brew "btop"
