@@ -217,6 +217,9 @@ install_macos_packages() {
     export PATH="$BIN:$PATH"   # keep ~/.local/bin (pinned nvim) ahead of Homebrew
 }
 
+# a stalled mirror connection is retried instead of hanging the install
+APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+
 apt_install() {
     # install what exists in this Ubuntu/Debian release, skip the rest
     # (--upgrade: also upgrade the ones already installed — only these, not the whole system)
@@ -232,11 +235,11 @@ apt_install() {
     done
     if [ -n "$missing" ]; then
         # shellcheck disable=SC2086
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $missing
+        sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install -y $missing
     fi
     if [ "$UPGRADE" -eq 1 ] && [ -n "$present" ]; then
         # shellcheck disable=SC2086
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y $present || warn "apt upgrade had problems"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install --only-upgrade -y $present || warn "apt upgrade had problems"
     fi
 }
 
@@ -246,7 +249,7 @@ install_linux_packages() {
         warn "not an apt-based distro — install packages yourself, then re-run with --links-only"
         return 0
     fi
-    sudo apt-get update -qq
+    sudo apt-get $APT_OPTS update -qq
     apt_install git curl unzip build-essential zsh \
         ripgrep fd-find jq btop lazygit fastfetch thefuck \
         wl-clipboard libnotify-bin duf
