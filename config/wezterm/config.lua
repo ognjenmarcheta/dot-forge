@@ -137,8 +137,18 @@ if not wezterm.target_triple:find("darwin") then
     -- clickable ls/ll, zoxide `z`). Your own ~/.bashrc / ~/.zshrc still load first.
     local home = wezterm.home_dir
     local login_shell = os.getenv("SHELL") or ""
-    if login_shell:find("zsh") then
-        config.default_prog = { login_shell, "-l" }
+    local function exists(path)
+        local f = io.open(path, "r")
+        if f then f:close() return true end
+        return false
+    end
+    -- zsh whenever it's installed (autosuggestions, highlighting, fzf-tab),
+    -- even before a re-login picks up `chsh`; bash otherwise
+    local zsh = (login_shell:find("zsh") and login_shell)
+        or (exists("/usr/bin/zsh") and "/usr/bin/zsh")
+        or (exists("/bin/zsh") and "/bin/zsh")
+    if zsh then
+        config.default_prog = { zsh, "-l" }
         config.set_environment_variables = { ZDOTDIR = home .. "/.config/shell/zsh" }
     else
         config.default_prog = { "bash", "--rcfile", home .. "/.config/shell/bashrc", "-i" }
