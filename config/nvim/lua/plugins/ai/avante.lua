@@ -5,6 +5,12 @@ return {
 		-- that works on 0.11 so Lazy Update can't move it; unpinned on 0.12+.
 		commit = vim.fn.has("nvim-0.12") == 0 and "865cee5f80db8b7959592f23f174acac36f8be8d" or nil,
 		enabled = EcoVim.plugins.ai.avante.enabled,
+		-- avante talks to Copilot; until you've signed in (`:Copilot auth`,
+		-- then restart) it errors on every start, so only load it after that.
+		cond = function()
+			local dir = (vim.env.XDG_CONFIG_HOME or (vim.env.HOME .. "/.config")) .. "/github-copilot/"
+			return vim.uv.fs_stat(dir .. "apps.json") ~= nil or vim.uv.fs_stat(dir .. "hosts.json") ~= nil
+		end,
 		lazy = false,
 		version = false,
 		opts = {

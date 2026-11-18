@@ -210,8 +210,11 @@ else
         PS1="$(_cp_fill "$PS1")"
     }
 
-    # Run after starship's own precmd (string or array PROMPT_COMMAND)
-    if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
+    # Run after starship's own precmd. With bash-preexec loaded (atuin needs
+    # it) starship registers in precmd_functions, so join it there.
+    if [ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]; then
+        precmd_functions+=(_cp_bash_precmd)
+    elif [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
         PROMPT_COMMAND+=(_cp_bash_precmd)
     else
         PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}_cp_bash_precmd"
