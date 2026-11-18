@@ -28,12 +28,40 @@ jobs:
       - name: Lint tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq shellcheck zsh lua5.4 python3-yaml >/dev/null
+          sudo apt-get install -y -qq shellcheck zsh lua5.4 python3-yaml tmux ttyd >/dev/null
       - run: bash tests/lint.sh
       - name: standup / client updates / subscription guard
         run: bash tests/work.sh
       - name: night shift / recall / habits / share mode / dot new
         run: bash tests/features.sh
+      - name: dot invite for real (tmux + ttyd, --local)
+        run: |
+          export XDG_STATE_HOME="$RUNNER_TEMP/state"
+          bash config/scripts/dot-invite --local --for 5m
+          port=$(sed -n 's/^port=//p' "$XDG_STATE_HOME/dotfiles/invite/current")
+          path=$(sed -n 's|^url=http://[^/]*/\([^/]*\)/$|\1|p' "$XDG_STATE_HOME/dotfiles/invite/current")
+          test "${#path}" -ge 20
+          code=$(curl -s -o page.html -w '%{http_code}' "http://127.0.0.1:$port/$path/")
+          echo "secret path: $code"; test "$code" = 200; grep -qi ttyd page.html
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/")
+          echo "without it: $code"; test "$code" != 200
+          tmux -L dot-invite list-sessions
+          bash config/scripts/dot-invite stop
+          ! curl -s -o /dev/null "http://127.0.0.1:$port/$path/"
+      - name: dot try for real (Docker; the sandbox is locked down from the inside)
+        run: |
+          if ! docker info >/dev/null 2>&1; then echo "no Docker on this runner — skipped"; exit 0; fi
+          export XDG_CACHE_HOME="$RUNNER_TEMP/cache" DOT_TRY_NO_TAB=1
+          bash config/scripts/dot-try chalk/ansi-regex --no-tour
+          c=$(docker ps --filter label=dot.try=1 --format '{{.Names}}' | head -n 1)
+          test -n "$c"
+          uid=$(docker exec "$c" id -u); echo "uid in sandbox: $uid"; test "$uid" != 0
+          cap=$(docker exec "$c" sh -c "grep CapEff /proc/self/status | awk '{print \$2}'"); echo "capabilities: $cap"; test "$cap" = 0000000000000000
+          docker exec "$c" sh -c 'test ! -e /var/run/docker.sock && test ! -e "$HOME/.ssh"' && echo "no docker socket, no ssh keys"
+          docker exec "$c" test -d /work/node_modules && echo "dependencies installed inside"
+          bash config/scripts/dot-try list
+          bash config/scripts/dot-try rm --all
+          test -z "$(docker ps -a --filter label=dot.try=1 -q)"
       - name: WezTerm config loads (same version as the Flatpak, else nightly)
         run: |
           base=https://github.com/wez/wezterm/releases/download

@@ -54,7 +54,9 @@ ALLOWED = ["Read", "Edit", "Write", "Glob", "Grep", "TodoWrite",
            "Bash(git add *)", "Bash(git commit *)", "Bash(git status*)", "Bash(git diff*)",
            "Bash(git log*)", "Bash(git show*)", "Bash(git restore *)", "Bash(git mv *)",
            "Bash(ls*)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)", "Bash(rg *)",
-           "Bash(find *)", "Bash(mkdir *)"]
+           "Bash(find *)", "Bash(mkdir *)",
+           # the dotfiles repo's own checks (dot evolve)
+           "Bash(bash tests/*)", "Bash(bash -n *)", "Bash(zsh -n *)", "Bash(shellcheck *)", "Bash(luac*)"]
 DENIED = ["Bash(git push*)", "Bash(git remote*)", "Bash(git config*)", "Bash(gh *)", "Bash(sudo *)",
           "Bash(curl *)", "Bash(wget *)", "Bash(ssh *)", "Bash(rm -rf /*)", "WebFetch", "WebSearch"]
 # your projects' commitlint (Kaine Forge) rejects AI attribution in commits
@@ -143,6 +145,24 @@ def slug(text: str) -> str:
     return "-".join(s.split("-")[:6])[:40] or "task"
 
 
+def add_json(data: dict) -> None:
+    """Queue from another tool (dot evolve): {repo, task, title?, auto_pr?, kind?}."""
+    items = load()
+    kind = data.get("kind")
+    if kind and any(it.get("kind") == kind and it["state"] in ("queued", "running") for it in items):
+        print(f"🌙 a {kind} task is already queued")
+        return
+    repo = Path(data["repo"]).expanduser().resolve()
+    if not (repo / ".git").exists():
+        sys.exit(f"dot night: {repo} isn't a git repo")
+    item_id = dt.datetime.now().strftime("%m%d") + f"{len(items) % 100:02d}" + base64.b32encode(os.urandom(2)).decode()[:2].lower()
+    items.append({"id": item_id, "repo": str(repo), "task": data["task"], "title": data.get("title"),
+                  "auto_pr": bool(data.get("auto_pr")), "kind": kind, "state": "queued",
+                  "added": dt.datetime.now().isoformat(timespec="seconds")})
+    save(items)
+    print(f"🌙 queued {item_id} for {repo.name}: {data.get('title') or data['task'][:60]}")
+
+
 def add(text: str) -> None:
     repo, task = resolve_repo(text)
     items = load()
@@ -172,7 +192,7 @@ def prepare(it: dict) -> tuple[Path, str, str]:
         return Path(it["worktree"]), it["branch"], it["base"]
     git(repo, "fetch", "--quiet", "origin", check=False)
     base = default_branch(repo)
-    branch = f"night/{dt.date.today():%Y%m%d}-{slug(it['task'])}"
+    branch = f"night/{dt.date.today():%Y%m%d}-{slug(it.get('title') or it['task'])}"
     if git(repo, "rev-parse", "--verify", "--quiet", branch, check=False):
         branch += "-" + it["id"][-2:]
     wt = repo.parent / ".night" / f"{repo.name}-{it['id']}"
@@ -277,6 +297,9 @@ def cmd_run(only: str | None) -> None:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         sys.exit("dot night: already running")
+    if not only and (SCRIPTS / "dot-evolve").exists():
+        # once a week: improvements to the dotfiles from where you struggled
+        subprocess.run([sys.executable, str(SCRIPTS / "dot-evolve"), "--auto"], capture_output=True, timeout=300)
     todo = [it for it in load() if it["state"] == "queued" and (not only or it["id"].startswith(only))]
     if not todo:
         print("dot night: nothing queued")
@@ -288,8 +311,14 @@ def cmd_run(only: str | None) -> None:
         sys.exit(f"dot night: {msg}")
     done: dict[str, int] = {}
     for it in todo:
-        print(f"🌙 {it['id']} {Path(it['repo']).name}: {it['task'][:70]}", flush=True)
+        print(f"🌙 {it['id']} {Path(it['repo']).name}: {(it.get('title') or it['task'])[:70]}", flush=True)
         state = run_one(it)
+        if state == "ready" and it.get("auto_pr"):
+            try:
+                cmd_pr(find(load(), it["id"]))
+                state = "pr"
+            except (SystemExit, subprocess.CalledProcessError, OSError) as e:
+                print(f"   draft PR failed: {e}", flush=True)
         done[state] = done.get(state, 0) + 1
         print(f"   → {state}", flush=True)
         if state == "limit":
@@ -319,7 +348,7 @@ def line(it: dict) -> str:
         extra.append(it["pr"])
     tail = col("2", " · ".join(extra)) if extra else ""
     return (f"{ICON.get(it['state'], '•')} {col('1', it['id'])} {col('36', Path(it['repo']).name)}: "
-            f"{it['task'][:80]}  {tail}")
+            f"{(it.get('title') or it['task'])[:80]}  {tail}")
 
 
 def cmd_list() -> None:
@@ -390,10 +419,10 @@ def cmd_pr(it: dict) -> None:
     subprocess.run(["git", "-C", str(wt), "push", "-u", "origin", it["branch"]], check=True)
     body = (it.get("summary") or "").splitlines()
     body = "\n".join(l for l in body if not l.upper().startswith("STATUS:")).strip()
-    title = git(wt, "log", "-1", "--format=%s", check=False) if it.get("commits") == 1 else it["task"][:70]
+    title = git(wt, "log", "-1", "--format=%s", check=False) if it.get("commits") == 1 else (it.get("title") or it["task"])[:70]
     base = (it.get("base") or "origin/main").removeprefix("origin/")
     r = subprocess.run(["gh", "pr", "create", "--draft", "--base", base, "--head", it["branch"],
-                        "--title", title, "--body", body or it["task"]], cwd=wt, capture_output=True, text=True)
+                        "--title", title, "--body", body or it.get("title") or it["task"]], cwd=wt, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(r.stderr.strip())
     url = r.stdout.strip().splitlines()[-1]
@@ -421,7 +450,7 @@ def cmd_clean(target: str | None) -> None:
 
 def main():
     argv = sys.argv[1:]
-    sub = {"list", "report", "open", "diff", "pr", "cancel", "retry", "clean", "run"}
+    sub = {"list", "report", "open", "diff", "pr", "cancel", "retry", "clean", "run", "add-json"}
     if argv and argv[0] not in sub and not argv[0].startswith("-"):
         add(" ".join(argv))
         return
@@ -430,6 +459,9 @@ def main():
     p.add_argument("id", nargs="?")
     p.add_argument("--brief", action="store_true")
     a = p.parse_args(argv)
+    if a.action == "add-json":
+        add_json(json.loads(sys.stdin.read()))
+        return
     if a.action == "list":
         cmd_list()
     elif a.action == "report":

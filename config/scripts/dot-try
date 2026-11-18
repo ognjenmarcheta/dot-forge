@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# dot try — look at any repo without letting it touch your machine.
+#
+#   dot try owner/repo | URL [--ref BRANCH] [--port 3000] [--no-install] [--no-tour] [--keep]
+#         clones it, installs its dependencies inside a throwaway container,
+#         gives you a short tour from Claude (what it is, how to run it,
+#         anything suspicious), and opens a shell in the container.
+#   dot try list            sandboxes and when they expire
+#   dot try shell [ID]      back into one (default: the newest)
+#   dot try rm ID | --all   delete now
+#
+# Safety: the repo's code only ever runs in the container — no access to your
+# home folder, SSH keys, Docker socket or other projects; no extra Linux
+# capabilities, no privilege escalation, CPU/memory/process limits, a normal
+# (non-root) user. On your side it is just files: cloned without git hooks,
+# submodules or symlinks. The tour reads text only (Claude gets no tools).
+# Sandboxes delete themselves after 24 h (--keep: until you dot try rm).
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCRIPTS="$(cd -- "$(dirname -- "$SELF")" && pwd)"
+ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/try"
+TTL="${DOT_TRY_HOURS:-24}"
+
+b() { printf '\033[1m%s\033[0m' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+step() { printf '\n\033[1;35m▸\033[0m %s\n' "$*"; }
+die() { printf '\033[31mdot try: %s\033[0m\n' "$*" >&2; exit 1; }
+
+engine() {
+    if [ -n "${DOT_TRY_ENGINE:-}" ]; then echo "$DOT_TRY_ENGINE"
+    elif command -v docker >/dev/null 2>&1; then echo docker
+    elif command -v podman >/dev/null 2>&1; then echo podman
+    else die "needs Docker (or Podman)"; fi
+}
+
+# expired sandboxes go first, every time
+clean_expired() {
+    local e now id exp
+    e="$(engine)"; now="$(date +%s)"
+    "$e" ps -a --filter label=dot.try=1 --format '{{.Names}} {{.Label "dot.try.expires"}}' 2>/dev/null \
+        | while read -r id exp; do
+            [ -n "$id" ] || continue
+            if [ "$exp" != never ] && [ -n "$exp" ] && [ "$exp" -lt "$now" ]; then
+                "$e" rm -f "$id" >/dev/null 2>&1 || true
+                rm -rf "${ROOT:?}/${id#dot-try-}"
+            fi
+        done
+    # folders whose container is gone
+    local d
+    for d in "$ROOT"/*/; do
+        [ -d "$d" ] || continue
+        d="${d%/}"
+        "$e" inspect "dot-try-$(basename "$d")" >/dev/null 2>&1 || rm -rf "$d"
+    done
+}
+
+newest() {
+    "$(engine)" ps -a --filter label=dot.try=1 --format '{{.CreatedAt}}\t{{.Names}}' 2>/dev/null | sort -r | head -n 1 | cut -f2
+}
+
+enter() { # container name
+    local e c="$1"
+    e="$(engine)"
+    "$e" start "$c" >/dev/null 2>&1 || true
+    if [ "${TERM_PROGRAM:-}" = WezTerm ] && command -v wezterm >/dev/null 2>&1 && [ -z "${DOT_TRY_NO_TAB:-}" ]; then
+        wezterm cli spawn -- "$e" exec -it "$c" bash -l >/dev/null 2>&1 && { dim "  opened in a new tab"; return 0; }
+    fi
+    if [ -t 0 ] && [ -z "${DOT_TRY_NO_TAB:-}" ]; then exec "$e" exec -it "$c" bash -l; fi
+    dim "  shell: dot try shell ${c#dot-try-}"
+}
+
+cmd_list() {
+    local e now
+    e="$(engine)"; now="$(date +%s)"
+    "$e" ps -a --filter label=dot.try=1 --format '{{.Names}}\t{{.Label "dot.try.repo"}}\t{{.Label "dot.try.expires"}}\t{{.Status}}' 2>/dev/null \
+        | while IFS="$(printf '\t')" read -r name repo exp st; do
+            local left="kept"
+            [ "$exp" = never ] || left="$(( (exp - now) / 3600 ))h left"
+            printf '%-22s %-46s %-9s %s\n' "${name#dot-try-}" "$repo" "$left" "$st"
+        done
+}
+
+pick_stack() { # dir → prints: image<TAB>install command<TAB>label
+    local d="$1"
+    if [ -f "$d/package.json" ]; then
+        if [ -f "$d/bun.lockb" ] || [ -f "$d/bun.lock" ]; then
+            printf 'oven/bun:1\tbun install\tBun\n'
+        elif [ -f "$d/pnpm-lock.yaml" ]; then
+            printf 'node:22-bookworm\tcorepack pnpm install --frozen-lockfile || corepack pnpm install\tNode + pnpm\n'
+        elif [ -f "$d/yarn.lock" ]; then
+            printf 'node:22-bookworm\tcorepack yarn install\tNode + yarn\n'
+        else
+            printf 'node:22-bookworm\tnpm ci || npm install\tNode + npm\n'
+        fi
+    elif [ -f "$d/pyproject.toml" ] || [ -f "$d/requirements.txt" ] || [ -f "$d/setup.py" ]; then
+        local inst='uv sync || (uv venv && uv pip install -e .)'
+        [ -f "$d/requirements.txt" ] && [ ! -f "$d/pyproject.toml" ] && inst='uv venv && uv pip install -r requirements.txt'
+        printf 'ghcr.io/astral-sh/uv:python3.12-bookworm\t%s\tPython (uv)\n' "$inst"
+    elif [ -f "$d/Cargo.toml" ]; then
+        printf 'rust:1-bookworm\tcargo fetch\tRust\n'
+    elif [ -f "$d/go.mod" ]; then
+        printf 'golang:1-bookworm\tgo mod download\tGo\n'
+    else
+        printf 'node:22-bookworm\t\tplain (git, Node, Python)\n'
+    fi
+}
+
+# risky things a repo can do to whoever installs it — shown to you and Claude
+red_flags() { # dir
+    local d="$1"
+    if [ -f "$d/package.json" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.scripts // {} | to_entries[] | select(.key | test("^(pre|post)?install$|^prepare$")) | "install hook: npm \(.key) → \(.value)"' "$d/package.json" 2>/dev/null || true
+    fi
+    [ -f "$d/setup.py" ] && echo "setup.py runs Python code on install"
+    [ -f "$d/build.rs" ] && echo "build.rs runs Rust code on build"
+    local rx='curl[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z)?sh|wget[^|]*\|[[:space:]]*(ba)?sh|eval[[:space:]]*\(?[[:space:]]*(atob|Buffer\.from)|base64[[:space:]]+(-d|--decode)[^|]*\|[[:space:]]*(ba)?sh|child_process|\.ssh/|id_rsa|\.aws/credentials|discord(app)?\.com/api/webhooks'
+    if command -v rg >/dev/null 2>&1; then
+        rg -n --no-heading -m 3 -g '!*.md' -g '!node_modules' -g '!*.lock' -g '!*lock.json' -g '!*.min.js' -e "$rx" "$d" 2>/dev/null | head -n 12 | sed "s|^$d/||" | cut -c1-160 || true
+    else
+        grep -rEn --exclude='*.md' --exclude-dir=node_modules --exclude-dir=.git -e "$rx" "$d" 2>/dev/null | head -n 12 | sed "s|^$d/||" | cut -c1-160 || true
+    fi
+    # very long lines in code = minified or obfuscated
+    find "$d" -path "$d/.git" -prune -o -path "$d/node_modules" -prune -o -type f \( -name '*.js' -o -name '*.py' -o -name '*.sh' \) ! -name '*.min.js' -size +2k -print 2>/dev/null \
+        | head -n 400 | while read -r f; do
+            if awk 'length > 3000 { found = 1; exit } END { exit !found }' "$f" 2>/dev/null; then echo "very long line (minified/obfuscated?): ${f#"$d"/}"; fi
+        done | head -n 5
+}
+
+tour() { # dir url
+    local d="$1" url="$2" ctx
+    ctx="$(mktemp)"
+    {
+        echo "# Repo: $url"
+        if command -v gh >/dev/null 2>&1 && [[ "$url" =~ github\.com[:/]([^/]+/[^/.]+) ]]; then
+            gh api "repos/${BASH_REMATCH[1]}" --jq '"stars: \(.stargazers_count) · forks: \(.forks_count) · license: \(.license.spdx_id // "none") · last push: \(.pushed_at) · created: \(.created_at)\ndescription: \(.description // "")"' 2>/dev/null || true
+        fi
+        echo; echo "## Recent commits"
+        git -C "$d" log --format='%ad %an: %s' --date=short -n 8 2>/dev/null || true
+        echo; echo "## Files ($(git -C "$d" ls-files | wc -l | tr -d ' ') tracked)"
+        git -C "$d" ls-files | awk -F/ '{ print (NF > 1 ? $1 "/" : $1) }' | sort | uniq -c | sort -rn | head -n 40
+        echo; echo "## Manifests"
+        local m
+        for m in package.json pyproject.toml Cargo.toml go.mod Makefile justfile docker-compose.yml compose.yaml Dockerfile; do
+            [ -f "$d/$m" ] && { echo "### $m"; head -c 4000 "$d/$m"; echo; }
+        done
+        echo; echo "## README"
+        for m in README.md README.rst README.txt README readme.md; do
+            [ -f "$d/$m" ] && { head -c 8000 "$d/$m"; break; }
+        done
+        echo; echo "## Red flags found by a quick scan (may be harmless)"
+        red_flags "$d" || true
+    } > "$ctx" 2>/dev/null
+    local system="You give a developer a quick tour of a repository they just cloned into a sandbox.
+Plain text for a terminal, short sections, no tables:
+1. What it is (1–2 sentences) and whether it looks maintained.
+2. How it's organised: the 4–8 folders/files that matter.
+3. How to run it in the sandbox: exact commands (dependencies are already installed if a lockfile/manifest existed).
+4. Safety: judge the red-flag scan and the install hooks — harmless, worth a look, or dangerous — and why. Say clearly if nothing stands out.
+Only use what's given; say when something is a guess."
+    "$SCRIPTS/dot-ai" --system "$system" "Give the tour." < "$ctx" || dim "  (no tour — Claude Code isn't on your subscription login; dot-ai --check)"
+    rm -f "$ctx"
+}
+
+cmd_try() {
+    local src="" ref="" port="" install=1 do_tour=1 keep=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --ref) ref="$2"; shift ;;
+            --port) port="$2"; shift ;;
+            --no-install) install=0 ;;
+            --no-tour) do_tour=0 ;;
+            --keep) keep=1 ;;
+            -*) die "unknown option $1 (dot try --help)" ;;
+            *) [ -z "$src" ] || die "one repo at a time"; src="$1" ;;
+        esac
+        shift
+    done
+    [ -n "$src" ] || { sed -n '2,/^set -e/p' "$SELF" | sed '$d; s/^# \{0,1\}//'; exit 2; }
+    [ -z "$port" ] || [[ "$port" =~ ^[0-9]+$ ]] || die "--port NUMBER"
+
+    local e url name id dir
+    e="$(engine)"
+    "$e" info >/dev/null 2>&1 || die "$e isn't running (start Docker Desktop / colima, or: sudo systemctl start docker)"
+    clean_expired
+    if [ -e "$src" ]; then url="$(cd "$src" && pwd)"            # a local folder or bare repo
+    elif [[ "$src" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then url="https://github.com/$src.git"
+    else url="$src"; fi
+    name="$(basename "${url%.git}" | tr -cd 'A-Za-z0-9_.-' | cut -c1-30)"
+    id="$name-$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    dir="$ROOT/$id"
+    mkdir -p "$ROOT"
+
+    step "Clone $url"
+    local branch=()
+    [ -n "$ref" ] && branch=(--branch "$ref")
+    git -c core.hooksPath=/dev/null -c core.symlinks=false -c advice.detachedHead=false \
+        clone --quiet --depth 1 --no-local --no-recurse-submodules --single-branch ${branch[@]+"${branch[@]}"} "$url" "$dir/src" \
+        || { rm -rf "$dir"; die "couldn't clone $url"; }
+    dim "  $(git -C "$dir/src" ls-files | wc -l | tr -d ' ') files · $(du -sh "$dir/src" 2>/dev/null | cut -f1) · $dir/src"
+
+    local stack image inst label
+    stack="$(pick_stack "$dir/src")"
+    image="$(printf '%s' "$stack" | cut -f1)"
+    inst="$(printf '%s' "$stack" | cut -f2)"
+    label="$(printf '%s' "$stack" | cut -f3)"
+
+    step "Sandbox: $label ($image)"
+    local expires=never
+    [ "$keep" -eq 1 ] || expires=$(( $(date +%s) + TTL * 3600 ))
+    local ports=()
+    [ -n "$port" ] && ports=(-p "127.0.0.1:$port:$port")
+    "$e" run -d --name "dot-try-$id" --hostname "try-$name" \
+        --label dot.try=1 --label "dot.try.repo=$url" --label "dot.try.expires=$expires" \
+        --user "$(id -u):$(id -g)" -e HOME=/tmp/home -e npm_config_cache=/tmp/home/.npm -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+        --cap-drop ALL --security-opt no-new-privileges \
+        --pids-limit 1024 --memory "${DOT_TRY_MEMORY:-4g}" --cpus "${DOT_TRY_CPUS:-4}" \
+        ${ports[@]+"${ports[@]}"} \
+        -v "$dir/src:/work" -w /work \
+        "$image" sleep infinity >/dev/null \
+        || { rm -rf "$dir"; die "couldn't start the container"; }
+    "$e" exec "dot-try-$id" sh -c 'mkdir -p /tmp/home' >/dev/null 2>&1 || true
+
+    if [ "$install" -eq 1 ] && [ -n "$inst" ]; then
+        step "Install dependencies (inside the sandbox)"
+        dim "  \$ $inst"
+        if ! "$e" exec "dot-try-$id" bash -lc "$inst" 2>&1 | tail -n 15 | sed 's/^/  /'; then
+            dim "  install had problems — the shell is still there to look around"
+        fi
+    fi
+
+    if [ "$do_tour" -eq 1 ]; then
+        step "Tour"
+        tour "$dir/src" "$url" | tee "$dir/TOUR.md" | sed 's/^/  /'
+    fi
+
+    printf '\n%s %s\n' "$(b "🧪 Sandbox ready:")" "$id"
+    if [ "$expires" = never ]; then dim "  kept until: dot try rm $id"; else dim "  deletes itself in ${TTL}h · dot try rm $id · dot try list"; fi
+    [ -n "$port" ] && dim "  port $port → http://localhost:$port"
+    enter "dot-try-$id"
+}
+
+case "${1:-}" in
+    -h|--help|help) sed -n '2,/^set -e/p' "$SELF" | sed '$d; s/^# \{0,1\}//' ;;
+    list|ls) clean_expired; cmd_list ;;
+    shell|sh)
+        c="${2:-}"
+        if [ -z "$c" ]; then c="$(newest)"; else c="dot-try-${c#dot-try-}"; fi
+        [ -n "$c" ] || die "no sandboxes — dot try owner/repo"
+        enter "$c" ;;
+    rm)
+        e="$(engine)"
+        if [ "${2:-}" = --all ]; then
+            "$e" ps -aq --filter label=dot.try=1 | while read -r c; do "$e" rm -f "$c" >/dev/null; done
+            rm -rf "${ROOT:?}"/*
+            echo "✓ all sandboxes deleted"
+        else
+            [ -n "${2:-}" ] || die "dot try rm ID (dot try list)"
+            "$e" rm -f "dot-try-${2#dot-try-}" >/dev/null 2>&1 || true
+            rm -rf "${ROOT:?}/${2#dot-try-}"
+            echo "✓ deleted ${2#dot-try-}"
+        fi ;;
+    clean) clean_expired ;;
+    *) cmd_try "$@" ;;
+esac
