@@ -224,7 +224,9 @@ if _dot_has carapace; then
     export CARAPACE_BRIDGES='zsh,bash'   # fall back to the shell's own completions
     if [ -n "$ZSH_VERSION" ]; then
         eval "$(carapace _carapace zsh)"
-    elif [ -n "$BASH_VERSION" ]; then
+    elif [ -n "$BASH_VERSION" ] && [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+        # carapace refuses bash 3.2 (macOS /bin/bash) with a `return 1` that
+        # would abort the rest of this file — zoxide's `z` included
         eval "$(carapace _carapace bash)"
     fi
 fi
