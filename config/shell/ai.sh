@@ -141,14 +141,10 @@ Give a corrected command that does what it was meant to do. ${*:+Extra info from
 
     local request="$*" reply rc
     printf '\033[2m… asking Claude\033[0m\r'
+    # dot-ai: always your Claude subscription login, never an API key
     reply=$(
         printf 'Context:\n%s\n\nRequest: %s\n' "$(_ai_context)" "$request" |
-        "$claude_bin" -p \
-            --model "${AI_MODEL:-sonnet}" \
-            --tools "" \
-            --no-session-persistence \
-            --output-format text \
-            --system-prompt "$system_prompt" 2>&1
+        "$HOME/.config/scripts/dot-ai" --system "$system_prompt" 2>&1
     )
     rc=$?
     printf '\033[2K'

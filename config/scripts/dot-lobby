@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# dot-lobby — the welcome card when you come back to a repo after a few days.
+#   dot-lobby card REPO LAST_VISIT [--with-away]   branch, PRs, CI, your last commands
+#   dot-lobby away REPO LAST_VISIT                 one line: what others pushed since
+#                                                  (fetches first; zsh runs it in the
+#                                                  background so cd stays instant)
+# Shown by config/shell/lobby.sh. Long summaries: Claude via dot-ai (subscription).
+set -uo pipefail
+mode="${1:-card}"
+root="${2:-}"
+last="${3:-0}"
+with_away="${4:-}"
+cd "$root" 2>/dev/null || exit 0
+now=$(date +%s)
+
+b=$'\033[1m' d=$'\033[2m' g=$'\033[32m' r=$'\033[31m' y=$'\033[33m' o=$'\033[0m'
+to() { if command -v timeout >/dev/null; then timeout "$@"; elif command -v gtimeout >/dev/null; then gtimeout "$@"; else shift; "$@"; fi; }
+me="$(git config user.email)"
+secret_re='(token|secret|password|passwd|api[_-]?key|authorization|ghp_|sk-ant-|BEGIN .*PRIVATE)'
+
+others_since() { # ref — "author<TAB>subject" lines by other people since the last visit
+    git log "$1" --since="@$last" --no-merges --format='%ae%x09%an%x09%s' 2>/dev/null \
+        | awk -F'\t' -v me="$me" '$1 != me {print $2 "\t" $3}'
+}
+
+upstream() {
+    git rev-parse --abbrev-ref '@{u}' 2>/dev/null \
+        || git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+        || echo HEAD
+}
+
+away_line() { # [fetch]
+    if [ "${1:-}" = fetch ]; then
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=4" \
+            to 10 git fetch --quiet 2>/dev/null
+    fi
+    local list n
+    list="$(others_since "$(upstream)")"
+    n=$(printf '%s' "$list" | grep -c . || true)
+    [ "$n" -gt 0 ] || return 0
+    if [ "$n" -gt 4 ] && [ "${1:-}" = fetch ] && [ -x "$HOME/.config/scripts/dot-ai" ]; then
+        local summary
+        summary=$(printf '%s\n' "$list" | head -n 60 \
+            | "$HOME/.config/scripts/dot-ai" --fast "These are commits other people pushed to a repo while I was away (author<TAB>subject). Summarise what changed in ONE line, max 140 characters, plain text, no preamble." 2>/dev/null | head -n 1)
+        [ -n "$summary" ] && { printf '↓ while you were away (%s commits): %s\n' "$n" "$summary"; return; }
+    fi
+    printf '↓ while you were away: %s commit(s) by others — %s\n' "$n" \
+        "$(printf '%s\n' "$list" | head -n 3 | cut -f2 | cut -c1-60 | paste -sd '·' - | sed 's/·/ · /g')"
+}
+
+if [ "$mode" = away ]; then
+    away_line fetch
+    exit 0
+fi
+
+# ------------------------------------------------------------------- card ---
+days=$(( (now - last) / 86400 ))
+name="$(basename "$root")"
+branch="$(git branch --show-current 2>/dev/null)"; branch="${branch:-detached}"
+line_branch="$branch"
+ab=$(git rev-list --left-right --count '@{u}...HEAD' 2>/dev/null)
+if [ -n "$ab" ]; then
+    behind=${ab%%[[:space:]]*}; ahead=${ab##*[[:space:]]}
+    [ "$ahead" != 0 ] && line_branch="$line_branch · $ahead ahead"
+    [ "$behind" != 0 ] && line_branch="$line_branch · $behind behind"
+fi
+dirty=$(git status --porcelain 2>/dev/null | grep -c . || true)
+[ "$dirty" -gt 0 ] && line_branch="$line_branch · ${y}$dirty uncommitted${o}"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+remote="$(git remote get-url origin 2>/dev/null)"
+if command -v gh >/dev/null 2>&1 && [[ "$remote" == *github.com* ]]; then
+    default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"; default="${default#origin/}"
+    ( to 4 gh pr list --author @me --state open --limit 5 --json number,title,isDraft > "$tmp/mine" 2>/dev/null ) &
+    ( to 4 gh pr list --search "review-requested:@me" --limit 5 --json number,title > "$tmp/review" 2>/dev/null ) &
+    ( to 4 gh run list -L 1 ${default:+--branch "$default"} --json conclusion,status,workflowName,headBranch > "$tmp/ci" 2>/dev/null ) &
+    wait
+fi
+prs="$(jq -r '.[] | "#\(.number) \(.title[0:40])\(if .isDraft then " (draft)" else "" end)"' "$tmp/mine" 2>/dev/null | paste -sd '·' - | sed 's/·/ · /g')"
+rev="$(jq -r '.[] | "#\(.number) \(.title[0:40])"' "$tmp/review" 2>/dev/null | paste -sd '·' - | sed 's/·/ · /g')"
+ci="$(jq -r '.[0] | if . == null then empty else
+        (if .conclusion == "success" then "✓" elif .conclusion == "failure" then "✗" elif .status != "completed" then "⟳" else (.conclusion // "?") end)
+        + " " + .workflowName + " on " + .headBranch end' "$tmp/ci" 2>/dev/null)"
+case "$ci" in "✓"*) ci="${g}$ci${o}" ;; "✗"*) ci="${r}$ci${o}" ;; esac
+
+cmds=""
+if command -v atuin >/dev/null 2>&1; then
+    cmds="$(ATUIN_SESSION="${ATUIN_SESSION:-$(atuin uuid 2>/dev/null)}" atuin search --cwd "$root" --limit 6 --format '{command}' 2>/dev/null \
+        | grep -viE "$secret_re" | tail -n 3 | cut -c1-40 | paste -sd '·' - | sed 's/·/ · /g')"
+fi
+
+when="$days days ago"; [ "$days" -eq 1 ] && when="yesterday"
+printf '%s╭─%s %s%s%s %s· last here %s%s\n' "$d" "$o" "$b" "$name" "$o" "$d" "$when" "$o"
+printf '%s│%s branch   %s\n' "$d" "$o" "$line_branch"
+[ -n "$prs" ] && printf '%s│%s PRs      %s\n' "$d" "$o" "$prs"
+[ -n "$rev" ] && printf '%s│%s review   %s%s%s\n' "$d" "$o" "$y" "$rev" "$o"
+[ -n "$ci" ]  && printf '%s│%s CI       %s\n' "$d" "$o" "$ci"
+[ -n "$cmds" ] && printf '%s│%s you ran  %s%s%s\n' "$d" "$o" "$d" "$cmds" "$o"
+if [ "$with_away" = --with-away ]; then
+    a="$(away_line)"; [ -n "$a" ] && printf '%s│%s %s\n' "$d" "$o" "$a"
+fi
+printf '%s╰─%s\n' "$d" "$o"

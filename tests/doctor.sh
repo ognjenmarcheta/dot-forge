@@ -68,6 +68,12 @@ if have zsh; then
         if [ -d "$HOME/.local/share/zsh-plugins/$plug" ]; then ok "zsh: $plug"; else bad "zsh: $plug missing"; fi
     done
 fi
+if have whisper-cli; then ok "whisper-cli (push-to-talk)"; else warn "whisper-cli missing — Alt+V push-to-talk off (run install.sh)"; fi
+if [ -s "$HOME/.local/share/whisper/ggml-base.bin" ]; then ok "speech model"; else warn "speech model missing — Alt+V push-to-talk off"; fi
+if [ -x "$HOME/.config/scripts/dot-ai" ] && have claude; then
+    if "$HOME/.config/scripts/dot-ai" --check 2>/dev/null; then ok "AI features use your Claude subscription"
+    else warn "Claude Code isn't on your subscription login — AI features off (dot-ai --check)"; fi
+fi
 if [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/session" ]; then ok "atuin history sync on"; else warn "history not synced between machines — run: dot sync-history"; fi
 if [ "$OS" = Linux ] && [ -z "${CI:-}" ]; then
     if [ -x /usr/bin/wezterm ]; then ok "WezTerm (regular build — sessions survive closing the window)"
@@ -97,7 +103,7 @@ if TERM=xterm-256color bash -ic '
 else
     bad "prompt has no clickable links"
 fi
-for f in z y ai rgf _dot_marks_precmd; do
+for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check; do
     if TERM=xterm-256color bash -ic "type $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in bash"; fi
 done
 
@@ -110,7 +116,7 @@ if have zsh; then
     else
         bad "prompt has no clickable links"
     fi
-    for f in z y ai rgf _dot_marks_precmd; do
+    for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check; do
         if TERM=xterm-256color zsh -ic "whence -w $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in zsh"; fi
     done
 fi

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# dot-voice listen — record from the microphone until you press a key, then
+# transcribe it ON THIS MACHINE with whisper.cpp and print the text.
+# Nothing is uploaded: the audio never leaves the computer, and it's deleted
+# right after. Used by Alt+V in the shell (config/shell/voice.sh).
+#   DOT_VOICE_MODEL   path to a ggml model (default ~/.local/share/whisper/ggml-base.bin)
+#   DOT_VOICE_LANG    language code, or "auto" (default)
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+model="${DOT_VOICE_MODEL:-$HOME/.local/share/whisper/ggml-base.bin}"
+lang="${DOT_VOICE_LANG:-auto}"
+whisper="$(command -v whisper-cli || command -v whisper-cpp || true)"
+
+say() { printf '%s' "$*" >/dev/tty; }
+if [ -z "$whisper" ] || [ ! -f "$model" ]; then
+    say $'\033[31mpush-to-talk isn\'t installed (whisper-cli + model) — run install.sh\033[0m\n'
+    exit 1
+fi
+
+wav="$(mktemp "${TMPDIR:-/tmp}/dot-voice.XXXXXX")"
+mv "$wav" "$wav.wav"; wav="$wav.wav"
+trap 'rm -f "$wav"' EXIT
+
+if command -v pw-record >/dev/null 2>&1; then
+    pw-record --rate 16000 --channels 1 --format s16 "$wav" 2>/dev/null &
+elif command -v arecord >/dev/null 2>&1; then
+    arecord -q -f S16_LE -r 16000 -c 1 "$wav" 2>/dev/null &
+elif command -v sox >/dev/null 2>&1; then
+    sox -q -d -r 16000 -c 1 -b 16 "$wav" 2>/dev/null &
+else
+    say $'\033[31mno audio recorder found (pw-record, arecord or sox)\033[0m\n'
+    exit 1
+fi
+rec=$!
+
+say $'\033[1;31m●\033[0m listening… \033[2m(press any key when you\'re done)\033[0m'
+IFS= read -rsn1 _ </dev/tty
+kill -INT "$rec" 2>/dev/null; wait "$rec" 2>/dev/null
+say $'\r\033[2K\033[2m✍  transcribing…\033[0m'
+
+text="$("$whisper" -m "$model" -f "$wav" -l "$lang" -nt -np 2>/dev/null \
+    | tr '\n' ' ' | sed -e 's/\[[^]]*\]//g' -e 's/([^)]*)//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/  */ /g')"
+say $'\r\033[2K'
+[ -n "$text" ] && printf '%s\n' "$text"
