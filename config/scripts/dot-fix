@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# dot-fix COMMAND EXIT_STATUS [SCREEN_FILE]
+# Prints ONE corrected command for an obvious mistake (typo, wrong flag or
+# order, a path the error message names) — or nothing. Used by the shell after
+# a failed command (config/shell/fix.sh). Your Claude subscription via dot-ai.
+set -uo pipefail
+cmd="${1:-}"
+status="${2:-1}"
+screen_file="${3:-}"
+[ -n "$cmd" ] || exit 0
+
+screen=""
+if [ -n "$screen_file" ]; then
+    # WezTerm writes what's on screen there (same hand-off as `ai fix`)
+    for _ in $(seq 1 20); do [ -s "$screen_file" ] && break; sleep 0.1; done
+    if [ -s "$screen_file" ]; then
+        screen="$(tail -n 40 "$screen_file" | cut -c1-300)"
+        rm -f -- "$screen_file"
+    fi
+fi
+
+instruction='A shell command just failed. If the cause is an obvious mistake — a typo in
+the command, subcommand or flag, wrong argument order, a missing argument or
+option that the error message names, a path or name the error message suggests —
+reply with ONLY the corrected command on one line. In every other case (the
+command was fine but the situation is not, tests failing, network, permissions,
+anything you would have to guess) reply with exactly: NONE
+No explanation, no quotes, no code fences.'
+
+reply="$(printf 'Shell: %s\nCommand: %s\nExit status: %s\nTerminal (last lines):\n%s\n' \
+    "$(basename "${SHELL:-sh}")" "$cmd" "$status" "$screen" \
+    | "$(dirname "$0")/dot-ai" --fast "$instruction" 2>/dev/null)" || exit 0
+
+line="$(printf '%s\n' "$reply" | sed -e 's/^```[a-z]*//' -e 's/```$//' -e 's/^\$ //' | grep -v '^[[:space:]]*$' | head -n 1)"
+line="${line#"${line%%[![:space:]]*}"}"
+case "$line" in
+    ""|NONE*|"$cmd") exit 0 ;;
+esac
+[ "${#line}" -le 400 ] && printf '%s\n' "$line"

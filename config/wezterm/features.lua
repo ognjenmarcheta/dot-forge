@@ -7,6 +7,8 @@
 --   Leader p       projects in ~/Github → open/switch a workspace (shell, nvim, lazygit)
 --   Ctrl+Shift+P   command palette (with the entries below added)
 --   Ctrl+Shift+U   emoji / symbol picker
+--   Leader a       agent radar: every Claude Code session, what it's doing, jump to it
+--   Leader ?       side pane with Claude, already given what you're looking at
 -- Plus: ● on a tab when Claude Code is waiting for you (hooks call
 -- ~/.config/scripts/agent-notify), the screen text for `ai fix`, a colour per
 -- git project (tab stripe, badge, tinted tab bar) and sessions that survive
@@ -348,6 +350,16 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
         local state, project, msg = value:match("^(%a+)\t([^\t]*)\t(.*)$")
         if not state then return end
         local id = tostring(pane:pane_id())
+        -- every session, for the agent radar (Leader a)
+        wezterm.GLOBAL.agents = wezterm.GLOBAL.agents or {}
+        local prev = wezterm.GLOBAL.agents[id]
+        wezterm.GLOBAL.agents[id] = {
+            state = state,
+            project = project,
+            -- keep the request while it works; the reply when it's done
+            msg = (msg ~= "" and msg) or (prev and prev.msg) or "",
+            since = (prev and prev.state == state) and prev.since or os.time(),
+        }
         if state == "working" or looking_at(window, pane) then
             wezterm.GLOBAL.agent[id] = nil
             return
@@ -365,6 +377,133 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
         local text = pane:get_lines_as_text(rows)
         write_private_file(path, text ~= "" and text or " ")
     end
+end)
+
+-- ------------------------------------------------------ agent radar -----
+
+local function pane_by_id(id)
+    local ok, p = pcall(mux.get_pane, tonumber(id))
+    return ok and p or nil
+end
+
+local function ago(t)
+    local s = os.time() - (t or os.time())
+    if s < 60 then return s .. "s" end
+    if s < 3600 then return math.floor(s / 60) .. "m" end
+    return string.format("%dh%02d", math.floor(s / 3600), math.floor(s % 3600 / 60))
+end
+
+-- sessions still open, waiting first
+function M.agent_list()
+    local list = {}
+    for id, a in pairs(wezterm.GLOBAL.agents or {}) do
+        if pane_by_id(id) then
+            table.insert(list, { id = id, state = a.state, project = a.project, msg = a.msg, since = a.since })
+        else
+            wezterm.GLOBAL.agents[id] = nil -- pane closed
+        end
+    end
+    local rank = { waiting = 1, working = 2, done = 3 }
+    table.sort(list, function(a, b)
+        if rank[a.state] ~= rank[b.state] then return (rank[a.state] or 9) < (rank[b.state] or 9) end
+        return (a.since or 0) < (b.since or 0)
+    end)
+    return list
+end
+
+local function focus_pane(window, pane, id)
+    local p = pane_by_id(id)
+    if not p then return end
+    local tab = p:tab()
+    local ws = tab and tab:window() and tab:window():get_workspace()
+    if ws then window:perform_action(act.SwitchToWorkspace { name = ws }, pane) end
+    if tab then tab:activate() end
+    p:activate()
+end
+
+local agent_radar = wezterm.action_callback(function(window, pane)
+    local icon = { waiting = "● waiting", working = "⟳ working", done = "✓ done   " }
+    local choices = {}
+    for _, a in ipairs(M.agent_list()) do
+        local msg = (a.msg or ""):gsub("%s+", " ")
+        if #msg > 70 then msg = msg:sub(1, 69) .. "…" end
+        table.insert(choices, {
+            id = a.id,
+            label = string.format("%s  %-18s %6s  %s", icon[a.state] or a.state, (a.project or ""):sub(1, 18), ago(a.since), msg),
+        })
+    end
+    if #choices == 0 then
+        toast(window, "No Claude sessions yet", "Sessions show up here once Claude Code runs (hooks from install.sh)")
+        return
+    end
+    window:perform_action(act.InputSelector {
+        title = "Agents  (● needs you · ⟳ working · ✓ done)",
+        fuzzy = true,
+        choices = choices,
+        action = wezterm.action_callback(function(win, p, id)
+            if id then focus_pane(win, p, id) end
+        end),
+    }, pane)
+end)
+
+-- ------------------------------------------------------- pair pane -----
+
+local function claude_path()
+    for _, c in ipairs({ home .. "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude" }) do
+        local f = io.open(c, "r")
+        if f then f:close() return c end
+    end
+    return "claude"
+end
+
+local function zone_text(pane, kind)
+    local ok, zones = pcall(function() return pane:get_semantic_zones(kind) end)
+    if not ok or not zones then return nil end
+    for i = #zones, 1, -1 do
+        local t = pane:get_text_from_semantic_zone(zones[i])
+        if t and t:match("%S") then return (t:gsub("%s+$", "")) end
+    end
+end
+
+local function host_output(args)
+    local ok, out = wezterm.run_child_process(host_cmd(args))
+    return ok and out or ""
+end
+
+-- Leader ?: Claude in a side pane, told about the folder, git state and the
+-- last command + its output. Your subscription only (API keys removed, and
+-- dot-ai --check must pass).
+local pair_pane = wezterm.action_callback(function(window, pane)
+    if not wezterm.run_child_process(host_cmd { home .. "/.config/scripts/dot-ai", "--check" }) then
+        toast(window, "Claude isn't on your subscription login", "Run `dot-ai --check` in a terminal to see why")
+        return
+    end
+    local cwd = pane:get_current_working_dir()
+    local ok, dir = pcall(function() return cwd and cwd.file_path end)
+    dir = ok and dir or home
+    local last_cmd = zone_text(pane, "Input") or ""
+    local output = zone_text(pane, "Output") or ""
+    if #output > 6000 then output = "…" .. output:sub(-6000) end
+    local ctx = table.concat({
+        "The user opened you in a side pane of their terminal to ask about what they are doing right now.",
+        "Answer their questions about it. Don't edit files or run commands unless they ask you to.",
+        "",
+        "Folder: " .. dir,
+        "Git:\n" .. host_output { "git", "-C", dir, "status", "--short", "--branch" },
+        "Changes:\n" .. host_output { "git", "-C", dir, "diff", "--stat" },
+        "Last command: " .. last_cmd,
+        "Its output (may be cut off at the top):\n" .. output,
+    }, "\n")
+    local file = home .. "/.cache/dotfiles/pair-" .. pane:pane_id() .. ".md"
+    host_output { "mkdir", "-p", home .. "/.cache/dotfiles" }
+    write_private_file(file, ctx)
+    pane:split {
+        direction = "Right",
+        size = 0.42,
+        cwd = dir,
+        args = { "/usr/bin/env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN",
+                 claude_path(), "--append-system-prompt-file", file },
+    }
 end)
 
 -- ------------------------------------------------- standup / updates -----
@@ -415,6 +554,8 @@ end)
 wezterm.on("augment-command-palette", function(window, pane)
     return {
         { brief = "Projects: open or switch  (Leader p)", icon = "md_folder_search", action = pick_project },
+        { brief = "Agents: who needs me?  (Leader a)", icon = "md_robot", action = agent_radar },
+        { brief = "Ask Claude about this pane  (Leader ?)", icon = "md_chat_question", action = pair_pane },
         {
             brief = "Standup (yesterday / today / blockers)",
             icon = "md_account_voice",
@@ -496,6 +637,8 @@ function M.apply(config)
         { key = "Space", mods = "LEADER", action = act.QuickSelect },
         { key = "u", mods = "LEADER", action = open_url },
         { key = "p", mods = "LEADER", action = pick_project },
+        { key = "a", mods = "LEADER", action = agent_radar },
+        { key = "?", mods = "LEADER", action = pair_pane },
     }
     for _, k in ipairs(keys) do table.insert(config.keys, k) end
 

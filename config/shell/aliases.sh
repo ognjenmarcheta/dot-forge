@@ -185,6 +185,9 @@ export GITHUB_USER="${GITHUB_USER:-ognjenmarcheta}"
 # --- Prompt / output marks + current folder for WezTerm (Warp-style blocks) ---
 [ -f "$HOME/.config/shell/marks.sh" ] && . "$HOME/.config/shell/marks.sh"
 
+# --- Self-healing typos: suggested fix after a failed command (F1 uses it) ----
+[ -f "$HOME/.config/shell/fix.sh" ] && . "$HOME/.config/shell/fix.sh"
+
 # --- ai: plain-English -> shell command via Claude Code ----------------------
 [ -f "$HOME/.config/shell/ai.sh" ] && . "$HOME/.config/shell/ai.sh"
 
