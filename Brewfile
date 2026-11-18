@@ -50,6 +50,10 @@ brew "fastfetch"
 brew "thefuck"
 brew "vhs"
 brew "terminal-notifier" # herdr script notifications
+brew "tmux"             # dot invite: the shared pane (viewers attach read-only)
+brew "ttyd"             # dot invite: the pane in a browser
+brew "cloudflared"      # dot invite: temporary public link (no account needed)
+brew "qrencode"         # QR codes in the terminal (dot invite)
 
 # window manager
 cask "nikitabobko/tap/aerospace" unless ENV["CI"]

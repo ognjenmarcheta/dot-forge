@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# dot invite — let someone watch one terminal in their browser, read-only.
+#
+#   dot invite [--for 1h] [--client acme] [--local]
+#         opens a new tab that is shared; prints a link (+ QR code, copied).
+#         Viewers can't type, scroll your history or see other tabs.
+#         Share mode is on while it runs (bigger font, secrets ask twice).
+#   dot invite status    link, time left, how many are watching
+#   dot invite stop      the link stops working (your tab stays)
+#
+#   --for 30m|2h   how long the link works (default 1h, at most 8h)
+#   --local        no public link: only this machine / your LAN / Tailscale
+#
+# How: your shell runs in tmux (its own server, no prefix key, no status
+# bar); ttyd serves `tmux attach -r` on 127.0.0.1 under a secret path; a
+# Cloudflare quick tunnel (no account) makes it reachable as
+# https://<random>.trycloudflare.com/<secret>/ until it expires.
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCRIPTS="$(cd -- "$(dirname -- "$SELF")" && pwd)"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/invite"
+STATE="$STATE_DIR/current"
+TMUX_SOCK=dot-invite
+TMUX_CONF="$SCRIPTS/dot-invite.tmux.conf"
+
+b() { printf '\033[1m%s\033[0m' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+die() { printf '\033[31mdot invite: %s\033[0m\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "needs $1 — re-run install.sh (${2:-})"; }
+get() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1; }
+alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+tm() { tmux -L "$TMUX_SOCK" -f "$TMUX_CONF" "$@"; }
+
+seconds() { # 30m / 2h / 90 (minutes)
+    local v="$1" n
+    case "$v" in
+        *h) n="${v%h}"; [[ "$n" =~ ^[0-9]+$ ]] || return 1; echo $((n * 3600)) ;;
+        *m) n="${v%m}"; [[ "$n" =~ ^[0-9]+$ ]] || return 1; echo $((n * 60)) ;;
+        *) [[ "$v" =~ ^[0-9]+$ ]] || return 1; echo $((v * 60)) ;;
+    esac
+}
+
+free_port() {
+    python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+
+copy() {
+    if command -v pbcopy >/dev/null 2>&1; then printf '%s' "$1" | pbcopy
+    elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1; then printf '%s' "$1" | wl-copy
+    elif command -v xclip >/dev/null 2>&1; then printf '%s' "$1" | xclip -selection clipboard
+    else return 1; fi
+}
+
+viewers() {
+    local n
+    n="$(tm list-clients -t "$(get session)" 2>/dev/null | wc -l | tr -d ' ')" || n=0
+    # one of the clients is you (the WezTerm tab), when it's open
+    [ "${n:-0}" -gt 0 ] && n=$((n - 1))
+    echo "${n:-0}"
+}
+
+running() { [ -f "$STATE" ] && alive "$(get ttyd)"; }
+
+cmd_status() {
+    if ! running; then echo "not sharing — dot invite"; return 1; fi
+    local left=$(( $(get expires) - $(date +%s) ))
+    printf '%s %s\n' "$(b "● sharing:")" "$(get url)"
+    dim "  $((left / 60)) min left · $(viewers) watching · dot invite stop"
+}
+
+cmd_stop() {
+    local quiet="${1:-}"
+    [ -f "$STATE" ] || { [ -n "$quiet" ] || echo "not sharing"; return 0; }
+    local p
+    for p in "$(get tunnel)" "$(get ttyd)" "$(get timer)"; do
+        [ "$p" = "$$" ] && continue
+        if alive "$p"; then kill "$p" 2>/dev/null || true; fi
+    done
+    # viewers are dropped; your tab keeps running
+    tm list-clients -t "$(get session)" -F '#{client_name} #{client_readonly}' 2>/dev/null \
+        | awk '$2 == 1 { print $1 }' | while read -r c; do tm detach-client -t "$c" 2>/dev/null || true; done
+    if [ "$(get started_share)" = 1 ]; then "$SCRIPTS/dot-mode" work >/dev/null 2>&1 || true; fi
+    rm -f "$STATE"
+    if [ -n "$quiet" ]; then
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send -a "dot invite" "Invite link expired" "Nobody can watch any more." 2>/dev/null || true
+        fi
+    else
+        echo "✓ the link stopped working (your shared tab stays open)"
+    fi
+}
+
+cmd_start() {
+    local dur=3600 client="" local_only=0 s
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --for) s="$(seconds "${2:-}")" || die "--for 30m / 2h"; dur="$s"; shift ;;
+            --client) client="$2"; shift ;;
+            --local) local_only=1 ;;
+            *) die "unknown option $1 (dot invite --help)" ;;
+        esac
+        shift
+    done
+    [ "$dur" -le 28800 ] || die "at most 8h"
+    if running; then cmd_status; return 0; fi
+    rm -f "$STATE"
+    need tmux "tmux"
+    need ttyd "ttyd"
+    [ "$local_only" -eq 1 ] || need cloudflared "cloudflared"
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR"
+
+    local id token port session log
+    id="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    token="$(head -c 18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')"
+    port="$(free_port)"
+    session="invite-$id"
+    log="$STATE_DIR/$id.log"
+
+    # 1. the shared shell (its own tmux server and config)
+    tm new-session -d -s "$session" -c "$PWD" -x "${COLUMNS:-160}" -y "${LINES:-45}"
+    tm set-option -t "$session" -q @dot_invite 1
+
+    # 2. ttyd: read-only attach, only on this machine (the tunnel reaches it)
+    local bind=127.0.0.1
+    [ "$local_only" -eq 1 ] && bind=0.0.0.0
+    nohup ttyd --interface "$bind" --port "$port" --base-path "/$token" --max-clients 10 \
+        -t titleFixed="$(whoami)'s terminal (read-only)" -t disableLeaveAlert=true -t fontSize=15 \
+        tmux -L "$TMUX_SOCK" attach-session -r -f ignore-size -t "$session" >>"$log" 2>&1 &
+    local ttyd_pid=$!
+
+    # 3. the link
+    local url tunnel_pid=""
+    if [ "$local_only" -eq 1 ]; then
+        local ip
+        ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+        [ -n "$ip" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+        [ -n "$ip" ] || ip="$(ipconfig getifaddr en0 2>/dev/null || echo 127.0.0.1)"
+        url="http://$ip:$port/$token/"
+    else
+        nohup cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$port" >>"$log" 2>&1 &
+        tunnel_pid=$!
+        url=""
+        for _ in $(seq 1 60); do
+            url="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null | head -n 1 || true)"
+            [ -n "$url" ] && break
+            alive "$tunnel_pid" || break
+            sleep 0.5
+        done
+        if [ -z "$url" ]; then
+            kill "$ttyd_pid" "$tunnel_pid" 2>/dev/null || true
+            tm kill-session -t "$session" 2>/dev/null || true
+            die "couldn't open a tunnel (see $log) — or use --local"
+        fi
+        url="$url/$token/"
+    fi
+
+    # 4. share mode (unless it's already on)
+    local started_share=0
+    if ! "$SCRIPTS/dot-mode" status 2>/dev/null | grep -q sharing; then
+        if [ -n "$client" ]; then "$SCRIPTS/dot-mode" share "$client" >/dev/null 2>&1 || "$SCRIPTS/dot-mode" share >/dev/null 2>&1 || true
+        else "$SCRIPTS/dot-mode" share >/dev/null 2>&1 || true; fi
+        started_share=1
+    fi
+
+    # 5. stop by itself
+    # shellcheck disable=SC2016  # expanded by the inner bash
+    nohup bash -c 'sleep "$1"; exec "$2" stop --expired' _ "$dur" "$SELF" >/dev/null 2>&1 &
+    local timer_pid=$!
+
+    umask 077
+    cat > "$STATE" <<EOF
+id=$id
+session=$session
+url=$url
+port=$port
+ttyd=$ttyd_pid
+tunnel=$tunnel_pid
+timer=$timer_pid
+expires=$(( $(date +%s) + dur ))
+started_share=$started_share
+EOF
+
+    # 6. your tab: attached to the shared shell
+    local opened=0
+    if [ "${TERM_PROGRAM:-}" = WezTerm ] && command -v wezterm >/dev/null 2>&1; then
+        wezterm cli spawn --cwd "$PWD" -- tmux -L "$TMUX_SOCK" attach-session -t "$session" >/dev/null 2>&1 && opened=1
+    fi
+
+    printf '\n%s %s\n\n' "$(b "👀 Invite link:")" "$url"
+    if command -v qrencode >/dev/null 2>&1; then qrencode -t ansiutf8 -m 1 "$url"; echo; fi
+    if copy "$url" 2>/dev/null; then dim "  copied · works for $((dur / 60)) min · read-only · dot invite stop"
+    else dim "  works for $((dur / 60)) min · read-only · dot invite stop"; fi
+    if [ "$opened" -eq 1 ]; then
+        dim "  The new tab is the shared one — work there. Other tabs stay private."
+    else
+        dim "  Open the shared shell: tmux -L $TMUX_SOCK attach -t $session"
+    fi
+    return 0
+}
+
+case "${1:-}" in
+    -h|--help|help) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+    status) cmd_status ;;
+    stop) if [ "${2:-}" = --expired ]; then cmd_stop quiet; else cmd_stop; fi ;;
+    *) cmd_start "$@" ;;
+esac

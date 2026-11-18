@@ -120,6 +120,12 @@ def snippet(text: str, rx: re.Pattern | None, ctx: int = 2, max_hits: int = 4) -
     return out
 
 
+def inside(path: str, root: str) -> bool:
+    """path is root or below it (symlinks resolved: macOS /var vs /private/var)"""
+    p, r = os.path.realpath(path or "/nonexistent"), os.path.realpath(root)
+    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
 def here_root() -> str:
     r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 else os.getcwd()
@@ -133,7 +139,7 @@ def ask_ai(question: str, days: int | None, here: str | None) -> None:
     rx = re.compile("|".join(map(re.escape, words)), re.I) if words else None
     picked, size = [], 0
     for e in entries(days if days is not None else 7):
-        if here and not e.get("cwd", "").startswith(here):
+        if here and not inside(e.get("cwd", ""), here):
             continue
         blob = e.get("cmd", "") + "\n" + e.get("out", "")
         if rx and not rx.search(blob) and len(picked) >= 5:
@@ -184,7 +190,7 @@ def main():
     shown = 0
     limit = a.last or a.limit
     for e in entries(a.days):
-        if here and not e.get("cwd", "").startswith(here):
+        if here and not inside(e.get("cwd", ""), here):
             continue
         out = e.get("out", "")
         if rx:
