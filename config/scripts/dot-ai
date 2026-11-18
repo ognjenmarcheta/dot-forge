@@ -80,7 +80,12 @@ to=""
 if command -v timeout >/dev/null 2>&1; then to="timeout $timeout_s"
 elif command -v gtimeout >/dev/null 2>&1; then to="gtimeout $timeout_s"; fi
 
-args=(-p --model "$model" --tools "" --no-session-persistence --output-format text)
+# A one-shot answer: no hooks, no MCP servers. Hooks from plugins (e.g. a
+# Stop hook that needs the transcript, which --no-session-persistence never
+# writes) can exit 2, which makes Claude keep going until it gives up with an
+# empty reply; MCP servers only slow every call down.
+args=(-p --model "$model" --tools "" --no-session-persistence --output-format text
+      --settings '{"disableAllHooks":true}' --strict-mcp-config --mcp-config '{"mcpServers":{}}')
 [ -n "$system" ] && args+=(--system-prompt "$system")
 [ $# -gt 0 ] && args+=("$*")
 
