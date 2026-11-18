@@ -116,6 +116,11 @@ hook_shell() {
             ok "$(tilde "$rc")"
         fi
     done
+    if have zsh && [ "$OS" = Linux ] && ! grep -qF skip_global_compinit "$HOME/.zshenv" 2>/dev/null; then
+        # Ubuntu's /etc/zsh/zshrc runs its own compinit first (twice the work, and it
+        # stops to ask about "insecure directories"); aliases.sh runs `compinit -i`.
+        printf 'skip_global_compinit=1  # dotfiles\n' >> "$HOME/.zshenv"
+    fi
     if [ "$OS" = Darwin ]; then
         # macOS bash login shells read ~/.bash_profile, not ~/.bashrc
         touch "$HOME/.bash_profile"
@@ -372,6 +377,7 @@ main() {
         setup_tools
         setup_git_identity
         setup_gh
+        have zsh && ! grep -qF '.config/shell/aliases.sh' "$HOME/.zshrc" 2>/dev/null && hook_shell   # zsh was just installed
         [ "$NVIM_PLUGINS" -eq 1 ] && install_nvim_plugins
     fi
 

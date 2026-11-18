@@ -44,6 +44,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/home"
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/home/.config" >> "$GITHUB_ENV"   # runners preset it to the real home
       - name: install.sh
         run: ./install.sh
       - name: Doctor + Neovim smoke test
