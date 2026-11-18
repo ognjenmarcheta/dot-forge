@@ -1,0 +1,4 @@
+# Started by WezTerm as: bash --rcfile ~/.config/shell/bashrc -i
+# Load your normal bash setup first, then the shared extras.
+[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+[ -f "$HOME/.config/shell/aliases.sh" ] && . "$HOME/.config/shell/aliases.sh"

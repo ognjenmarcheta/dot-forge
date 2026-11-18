@@ -1,0 +1,47 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+current_session=""
+if herdr_resolve_project "$PWD" >/dev/null 2>&1; then
+  current_session="$HP_SESSION"
+fi
+
+sessions_json="$(command herdr session list --json 2>/dev/null)"
+if (( $? != 0 )); then
+  print -u2 "hlist: unable to read Herdr sessions"
+  exit 1
+fi
+
+print "Herdr sessions"
+print "--------------"
+
+print -r -- "$sessions_json" | jq -r --arg current "$current_session" '
+  .sessions[]
+  | [
+      (if .name == $current then "*" else " " end),
+      .name,
+      (if .running then "running" else "stopped" end),
+      .session_dir
+    ]
+  | @tsv
+' | while IFS=$'\t' read -r marker name session_state dir; do
+  printf "%s %-28s %-8s %s\n" "$marker" "$name" "$session_state" "$dir"
+
+  if [[ "$session_state" == "running" ]]; then
+    agents_json="$(command herdr --session "$name" agent list 2>/dev/null)"
+    if (( $? == 0 )); then
+      summary="$(print -r -- "$agents_json" | jq -r '
+        [.result.agents[]?.agent_status]
+        | if length == 0 then "agents=0"
+          else sort | group_by(.) | map("\(.[0])=\(length)") | join(" ")
+          end
+      ')"
+      printf "  %s\n" "$summary"
+    fi
+  fi
+done

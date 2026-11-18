@@ -1,0 +1,45 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+format="text"
+target="$PWD"
+
+if (( $# > 0 )) && [[ "$1" == "--json" ]]; then
+  format="json"
+  shift
+fi
+
+if (( $# > 0 )); then
+  target="$1"
+fi
+
+if ! herdr_resolve_project "$target"; then
+  print -u2 "hwhere: unable to resolve directory: $target"
+  exit 2
+fi
+
+running=false
+if herdr_session_running "$HP_SESSION"; then
+  running=true
+fi
+
+if [[ "$format" == "json" ]]; then
+  jq -n \
+    --arg root "$HP_ROOT" \
+    --arg session "$HP_SESSION" \
+    --arg session_dir "$HP_SESSION_DIR" \
+    --arg socket_path "$HP_SOCKET_PATH" \
+    --argjson running "$running" \
+    '{root:$root, session:$session, session_dir:$session_dir, socket_path:$socket_path, running:$running}'
+else
+  print "root:        $HP_ROOT"
+  print "session:     $HP_SESSION"
+  print "session dir: $HP_SESSION_DIR"
+  print "socket:      $HP_SOCKET_PATH"
+  print "running:     $running"
+fi

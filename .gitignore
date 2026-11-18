@@ -1,0 +1,18 @@
+# OS junk
+.DS_Store
+._*
+
+# binaries / caches that tools create inside linked config folders
+config/shell/bin/
+**/node_modules/
+**/__pycache__/
+*.log
+
+# secrets that must never be committed
+config/opencode/service.json
+config/gh/hosts.yml
+config/github-copilot/
+config/containers/auth.json
+
+# Neovim backups
+config/nvim/lazy-lock.before-fix.json

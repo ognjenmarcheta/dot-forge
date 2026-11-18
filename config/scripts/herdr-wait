@@ -1,0 +1,58 @@
+#!/usr/bin/env zsh
+
+emulate -L zsh
+setopt pipe_fail
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/herdr-common.zsh"
+
+_usage() {
+  print "Usage: hwait <agent-or-pane> [status] [timeout-ms]"
+  print
+  print "Default status is done. Status can be idle, working, blocked, done, or unknown."
+}
+
+if (( $# == 0 )) || [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  _usage
+  exit $(( $# == 0 ? 2 : 0 ))
+fi
+
+target="$1"
+desired_status="${2:-done}"
+timeout="${3:-}"
+
+if ! herdr_resolve_project "$PWD"; then
+  print -u2 "hwait: unable to resolve current project"
+  exit 2
+fi
+
+agent_json="$(command herdr --session "$HP_SESSION" agent get "$target" 2>/dev/null)"
+if (( $? == 0 )); then
+  pane_id="$(print -r -- "$agent_json" | jq -r '.result.agent.pane_id // .result.pane.pane_id // .result.pane_id // empty')"
+else
+  pane_id="$target"
+fi
+
+if [[ -z "$pane_id" || "$pane_id" == "null" ]]; then
+  print -u2 "hwait: unable to resolve target: $target"
+  exit 2
+fi
+
+if ! command herdr --session "$HP_SESSION" pane get "$pane_id" >/dev/null 2>&1; then
+  print -u2 "hwait: target is not an agent name or pane id in session $HP_SESSION: $target"
+  exit 2
+fi
+
+cmd=(command herdr --session "$HP_SESSION" wait agent-status "$pane_id" --status "$desired_status")
+if [[ -n "$timeout" ]]; then
+  cmd+=(--timeout "$timeout")
+fi
+
+"${cmd[@]}"
+wait_status=$?
+
+if (( wait_status == 0 )); then
+  herdr_notify "Herdr: $HP_SESSION" "$target reached $desired_status" "wait complete"
+fi
+
+exit "$wait_status"
