@@ -218,6 +218,14 @@ install_macos_packages() {
         load_brew
     fi
     if [ "$UPGRADE" -eq 1 ]; then brew update && brew upgrade || warn "brew upgrade had problems"; fi
+    # Homebrew 7 refuses casks/formulae from third-party taps until they're trusted
+    # (AeroSpace: "Refusing to load cask … from untrusted tap")
+    if brew trust --help >/dev/null 2>&1; then
+        local tap
+        for tap in $(sed -n 's/^tap "\([^"]*\)".*/\1/p' "$DOTFILES/Brewfile"); do
+            brew trust --tap "$tap" >/dev/null 2>&1 || warn "could not trust tap $tap"
+        done
+    fi
     if brew bundle --file="$DOTFILES/Brewfile"; then
         ok "Brewfile installed"
     else
