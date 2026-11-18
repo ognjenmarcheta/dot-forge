@@ -27,7 +27,7 @@ need() { # label, regex that must appear in the key table
 }
 need "Leader p (projects)"   "key = 'p', mods = 'LEADER'"
 need "Leader y (copy output)" "key = 'y', mods = 'LEADER'"
-need "Leader Space (quick select)" "key = '( |Space)', mods = 'LEADER'" "space|quick"
+need "Leader Space (quick select)" "key = '(phys:)?Space', mods = 'LEADER', action = act.QuickSelect" "space"
 need "Shift+Up (prev command)" "key = 'UpArrow', mods = 'SHIFT'"
 need "Ctrl+h (pane/split nav)" "key = 'h', mods = 'CTRL'"
 need "Leader w (workspaces)" "key = 'w', mods = 'LEADER'"
