@@ -1,0 +1,396 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot janitor — free the disk space old projects sit on.
+
+Looks at your repos (~/Github and the roots in clients.toml) that you haven't
+touched for 30 days and finds what can always be rebuilt: node_modules,
+.turbo, .next, dist, build, target, .venv, caches… Only folders git ignores
+are ever deleted — never anything tracked, never your code, never a repo with
+a program running in it. Also: unused Docker images and build cache older
+than 30 days (never volumes), unused pnpm / uv cache, expired dot try sandboxes.
+
+  dot janitor             show what can go, ask, then clean
+  dot janitor --list      only show it
+  dot janitor --days 60   "untouched" means 60 days (default 30)
+  dot janitor --yes       clean without asking
+  dot janitor --check     print how many GB could go (for the weekly hint)
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "dotfiles" / "clients.toml"
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state")) / "dotfiles"
+SCRIPTS = Path(__file__).resolve().parent
+C = sys.stdout.isatty()
+
+# rebuildable folders, by name (only deleted when git ignores them)
+TARGETS = {"node_modules", ".turbo", ".next", ".nuxt", ".svelte-kit", ".output", ".expo", ".parcel-cache",
+           ".vite", ".angular", ".cache", "dist", "build", "out", "coverage", ".nyc_output", "storybook-static",
+           "target", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+           ".gradle", "DerivedData", "Pods", ".dart_tool", ".terraform"}
+SKIP_WALK = {".git", ".hg", ".svn"}
+
+
+def col(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if C else s
+
+
+def gb(n: int) -> str:
+    if n >= 1 << 30:
+        return f"{n / (1 << 30):.1f} GB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.0f} MB"
+    return f"{n / 1024:.0f} KB"
+
+
+def ago(ts: float) -> str:
+    days = int((time.time() - ts) / 86400)
+    if days < 60:
+        return f"{days} days ago"
+    if days < 730:
+        return f"{days // 30} months ago"
+    return f"{days // 365} years ago"
+
+
+@dataclass
+class Item:
+    label: str
+    size: int
+    detail: str = ""
+    paths: list[Path] = field(default_factory=list)
+    commands: list[list[str]] = field(default_factory=list)
+    estimate: bool = False   # size is "up to"
+
+
+# ---------------------------------------------------------------- repos --
+
+def roots() -> list[Path]:
+    out = [Path(os.environ.get("DOT_PROJECTS", HOME / "Github"))]
+    if CONFIG.exists():
+        try:
+            import tomllib
+            cfg = tomllib.loads(CONFIG.read_text())
+            for r in cfg.get("settings", {}).get("roots", []):
+                out.append(Path(os.path.expanduser(r)))
+        except Exception:
+            pass
+    seen, res = set(), []
+    for r in out:
+        r = r.resolve() if r.exists() else r
+        if r.exists() and r not in seen:
+            seen.add(r)
+            res.append(r)
+    return res
+
+
+def find_repos(root: Path, depth: int = 3) -> list[Path]:
+    found = []
+
+    def walk(d: Path, level: int):
+        if (d / ".git").exists():
+            found.append(d)
+            return
+        if level >= depth:
+            return
+        try:
+            for e in os.scandir(d):
+                if e.is_dir(follow_symlinks=False) and e.name not in TARGETS and e.name not in SKIP_WALK:
+                    walk(Path(e.path), level + 1)
+        except OSError:
+            pass
+
+    walk(root, 0)
+    return found
+
+
+def git(repo: Path, *args: str, input: str | None = None) -> str:
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, input=input)
+    return r.stdout
+
+
+def last_touched(repo: Path) -> float:
+    ts = [0.0]
+    t = git(repo, "log", "-1", "--format=%ct").strip()
+    if t.isdigit():
+        ts.append(float(t))
+    gitdir = repo / ".git"
+    if gitdir.is_file():  # a worktree: .git is a file pointing at the real one
+        m = re.match(r"gitdir:\s*(.+)", gitdir.read_text())
+        gitdir = Path(m.group(1).strip()) if m else gitdir
+    for f in ("index", "HEAD", "ORIG_HEAD"):
+        p = gitdir / f
+        if p.exists():
+            ts.append(p.stat().st_mtime)
+    # editing files without committing counts too (top level + src/, cheap)
+    for d in (repo, repo / "src", repo / "apps", repo / "packages"):
+        try:
+            for e in os.scandir(d):
+                if e.name not in TARGETS and not e.name.startswith(".") and e.is_file(follow_symlinks=False):
+                    ts.append(e.stat().st_mtime)
+        except OSError:
+            pass
+    return max(ts)
+
+
+def busy_dirs() -> list[str]:
+    """Folders a running program is in (Linux: /proc; macOS: lsof)."""
+    out = []
+    if Path("/proc").exists():
+        for p in Path("/proc").iterdir():
+            if p.name.isdigit():
+                try:
+                    out.append(os.readlink(p / "cwd"))
+                except OSError:
+                    pass
+    elif shutil.which("lsof"):
+        r = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fn"], capture_output=True, text=True)
+        out = [l[1:] for l in r.stdout.splitlines() if l.startswith("n")]
+    return out
+
+
+def candidates(repo: Path) -> list[Path]:
+    hits: list[Path] = []
+
+    def walk(d: Path, level: int):
+        if level > 6:
+            return
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            return
+        for e in entries:
+            if not e.is_dir(follow_symlinks=False) or e.name in SKIP_WALK:
+                continue
+            p = Path(e.path)
+            if e.name in TARGETS:
+                hits.append(p)          # don't look inside
+            elif (p / ".git").exists():
+                continue                # a nested repo is its own repo
+            else:
+                walk(p, level + 1)
+
+    walk(repo, 0)
+    if not hits:
+        return []
+    # only what git ignores (tracked folders named build/ or dist/ stay)
+    rel = [str(h.relative_to(repo)) + "/" for h in hits]
+    ignored = set(git(repo, "check-ignore", "--stdin", input="\n".join(rel) + "\n").split())
+    ok = []
+    for h, r in zip(hits, rel):
+        if r in ignored or r.rstrip("/") in ignored:
+            if not git(repo, "ls-files", "--", r).strip():     # nothing inside is tracked
+                ok.append(h)
+    return ok
+
+
+def du(paths: list[Path]) -> int:
+    if not paths:
+        return 0
+    total = 0
+    for i in range(0, len(paths), 200):
+        chunk = [str(p) for p in paths[i:i + 200]]
+        r = subprocess.run(["du", "-sk", *chunk], capture_output=True, text=True)
+        for line in r.stdout.splitlines():
+            k = line.split("\t", 1)[0]
+            if k.isdigit():
+                total += int(k) * 1024
+    return total
+
+
+def repo_items(days: int) -> list[Item]:
+    cutoff = time.time() - days * 86400
+    busy = busy_dirs()
+    items = []
+    for root in roots():
+        for repo in find_repos(root):
+            touched = last_touched(repo)
+            if touched > cutoff:
+                continue
+            rp = str(repo)
+            if any(b == rp or b.startswith(rp + os.sep) for b in busy):
+                continue
+            paths = candidates(repo)
+            if not paths:
+                continue
+            size = du(paths)
+            if size < 20 << 20:      # under 20 MB: not worth a line
+                continue
+            names = sorted({p.name for p in paths}, key=lambda n: n)
+            short = "~/" + str(repo.relative_to(HOME)) if repo.is_relative_to(HOME) else str(repo)
+            items.append(Item(label=short, size=size, paths=paths,
+                              detail=f"{', '.join(names[:5])}{' …' if len(names) > 5 else ''} · last touched {ago(touched)}"))
+    return sorted(items, key=lambda i: -i.size)
+
+
+# ---------------------------------------------------------- the rest -----
+
+def parse_size(s: str) -> int:
+    m = re.match(r"([\d.]+)\s*([kKMGT]?B)", s.strip())
+    if not m:
+        return 0
+    mult = {"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[m.group(2)]
+    return int(float(m.group(1)) * mult)
+
+
+def docker_items() -> list[Item]:
+    exe = shutil.which("docker")
+    if not exe or subprocess.run([exe, "info"], capture_output=True).returncode != 0:
+        return []
+    r = subprocess.run([exe, "system", "df", "--format", "{{json .}}"], capture_output=True, text=True)
+    items = []
+    for line in r.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rec = parse_size(str(row.get("Reclaimable", "0B")).split(" ")[0])
+        kind = row.get("Type", "")
+        if rec < 500 << 20:
+            continue
+        if kind == "Images":
+            items.append(Item("Docker: images no container uses (30+ days old)", rec, estimate=True,
+                              commands=[[exe, "image", "prune", "-a", "-f", "--filter", "until=720h"]]))
+        elif kind == "Build Cache":
+            items.append(Item("Docker: build cache (30+ days old)", rec, estimate=True,
+                              commands=[[exe, "builder", "prune", "-f", "--filter", "until=720h"]]))
+    return items
+
+
+def cache_items() -> list[Item]:
+    items = []
+    if shutil.which("pnpm"):
+        store = subprocess.run(["pnpm", "store", "path"], capture_output=True, text=True).stdout.strip()
+        if store and Path(store).exists():
+            size = du([Path(store)])
+            if size > 2 << 30:
+                items.append(Item("pnpm store: packages no project uses any more", size, estimate=True,
+                                  detail=f"store is {gb(size)}; prune keeps what's in use",
+                                  commands=[["pnpm", "store", "prune"]]))
+    if shutil.which("uv"):
+        d = subprocess.run(["uv", "cache", "dir"], capture_output=True, text=True).stdout.strip()
+        if d and Path(d).exists():
+            size = du([Path(d)])
+            if size > 2 << 30:
+                items.append(Item("uv cache: unused entries", size, estimate=True,
+                                  detail=f"cache is {gb(size)}", commands=[["uv", "cache", "prune"]]))
+    try_dir = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "dotfiles" / "try"
+    if try_dir.exists() and any(try_dir.iterdir()):
+        items.append(Item("dot try: expired sandboxes", 0, estimate=True,
+                          commands=[[str(SCRIPTS / "dot-try"), "clean"]]))
+    return items
+
+
+# --------------------------------------------------------------- clean ---
+
+def safe_rmtree(p: Path) -> None:
+    if p.is_symlink():
+        p.unlink()
+        return
+    if p.name not in TARGETS:            # belt and braces
+        raise RuntimeError(f"refusing to delete {p}")
+
+    def onerror(func, path, _exc):
+        try:
+            os.chmod(path, 0o700)
+            func(path)
+        except OSError:
+            pass
+
+    shutil.rmtree(p, onerror=onerror)
+
+
+def clean(items: list[Item]) -> int:
+    freed = 0
+    for it in items:
+        before = it.size
+        for p in it.paths:
+            try:
+                safe_rmtree(p)
+            except OSError as e:
+                print(col("33", f"  ! {p}: {e}"))
+        for cmd in it.commands:
+            subprocess.run(cmd, capture_output=True)
+        freed += before if not it.estimate else 0
+        print(f"  {col('32', '✓')} {it.label}")
+    return freed
+
+
+def ask(prompt: str) -> str:
+    try:
+        with open("/dev/tty") as tty:
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+            return tty.readline().strip().lower()
+    except OSError:
+        return "n"
+
+
+def main():
+    p = argparse.ArgumentParser(prog="dot janitor", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--days", type=int, default=int(os.environ.get("DOT_JANITOR_DAYS", "30")))
+    p.add_argument("--list", "--dry-run", action="store_true", dest="list")
+    p.add_argument("--yes", "-y", action="store_true")
+    p.add_argument("--check", action="store_true")
+    a = p.parse_args()
+
+    if not a.check:
+        print(col("2", "… looking"), end="\r", flush=True)
+    items = repo_items(a.days)
+    if a.check:
+        total = sum(i.size for i in items) + sum(i.size for i in docker_items())
+        print(int(total / (1 << 30)))
+        return
+    items += docker_items() + cache_items()
+    if C:
+        print("\033[2K\r", end="")
+    if not items:
+        print(f"Nothing to clean: no project untouched for {a.days}+ days holds build files.")
+        return
+    total = sum(i.size for i in items)
+    print(f"{col('1', '🧹 ' + gb(total))} can go {col('2', f'(projects untouched for {a.days}+ days, old caches)')}\n")
+    for i, it in enumerate(items, 1):
+        size = ("up to " if it.estimate else "") + gb(it.size) if it.size else "    "
+        print(f"  {col('2', f'{i:>2}')} {size:>14}  {col('36', it.label)}")
+        if it.detail:
+            print(f"     {'':>14}  {col('2', it.detail)}")
+    print()
+    if a.list:
+        return
+    if a.yes:
+        chosen = items
+    else:
+        ans = ask(f"Free it? [Y = all · numbers like 1 3 = only those · n] ")
+        if ans in ("n", "no"):
+            return
+        if ans in ("", "y", "yes", "a", "all"):
+            chosen = items
+        else:
+            nums = {int(x) for x in re.findall(r"\d+", ans)}
+            chosen = [it for i, it in enumerate(items, 1) if i in nums]
+    if not chosen:
+        return
+    print()
+    free_before = shutil.disk_usage(str(HOME)).free
+    clean(chosen)
+    freed = shutil.disk_usage(str(HOME)).free - free_before
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "janitor-count").write_text("0")
+    print(f"\n{col('32', f'Freed {gb(max(freed, 0))}.')} {col('2', 'Rebuild any of it with the usual install (pnpm install, uv sync, cargo build…).')}")
+
+
+if __name__ == "__main__":
+    main()

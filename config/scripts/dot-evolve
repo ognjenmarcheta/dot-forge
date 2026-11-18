@@ -1,0 +1,294 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot evolve — the dotfiles improve themselves from where you struggled.
+
+Once a week it collects the friction of the last 7 days: commands that kept
+failing (with the error from dot recall), "command not found", things you
+looked up again and again (ai / tldr / man / --help), the same few commands
+you type to get started in a repo, slow commands, and what `dot doctor`
+warns about. Then it queues a night-shift task on the dotfiles repo: Claude
+makes a few small fixes (aliases, cheats, a just recipe, a missing tool,
+docs), runs the repo's tests, and opens a DRAFT pull request for you to
+review in the morning. Nothing changes on your machine until you merge.
+
+  dot evolve            show this week's friction report
+  dot evolve --queue    queue it for tonight (draft PR in the morning)
+  dot evolve --auto     what the night shift runs: queue if a week has passed
+                        and there is something worth fixing (DOT_EVOLVE=0 = never)
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share")) / "dotfiles"
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state")) / "dotfiles"
+SCRIPTS = Path(__file__).resolve().parent
+DAYS = 7
+SECRETS = [  # (pattern, replacement) — applied in order
+    (re.compile(r"(?i)((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)?\s*)[^\s\"']+"), r"\1•••"),
+    (re.compile(r"(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1•••"),
+    (re.compile(r"(?i)((?:token|secret|passw(?:or)?d|api[_-]?key)[\w-]*\s*[=:]\s*)[^\s\"']+"), r"\1•••"),
+    (re.compile(r"(ghp_\w+|gho_\w+|github_pat_\w+|sk-ant-[\w-]+|sk-\w{20,}|AKIA[A-Z0-9]{16}|xox[bpas]-[\w-]+)"), "•••"),
+    (re.compile(r"(://[^/\s:@]+:)[^@\s]+@"), r"\1•••@"),
+]
+LOOKUP = re.compile(r"^(ai(?: explain)?|tldr|man|cheat|navi --query)\s+(.+)$|^(\S+)(?:\s+\S+)?\s+(?:--help|-h)$")
+
+
+def mask(s: str) -> str:
+    for rx, repl in SECRETS:
+        s = rx.sub(repl, s)
+    return s
+
+
+def dotfiles_repo() -> Path:
+    if os.environ.get("DOTFILES_DIR"):
+        return Path(os.environ["DOTFILES_DIR"])
+    link = HOME / ".config" / "shell"
+    if link.is_symlink():
+        return link.resolve().parent.parent
+    return HOME / "Github" / "dotfiles"
+
+
+def short(path: str) -> str:
+    h = str(HOME)
+    return "~" + path[len(h):] if path.startswith(h) else path
+
+
+def seconds(d: str) -> float:
+    total = 0.0
+    for n, unit in re.findall(r"([\d.]+)\s*(ns|us|µs|ms|s|m|h)", d):
+        total += float(n) * {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600}[unit]
+    return total
+
+
+def history() -> list[dict]:
+    if os.environ.get("DOT_EVOLVE_FROM"):                 # tests: same format as below
+        out = Path(os.environ["DOT_EVOLVE_FROM"]).read_text()
+    elif shutil.which("atuin"):
+        env = {**os.environ}
+        env.setdefault("ATUIN_SESSION", subprocess.run(["atuin", "uuid"], capture_output=True, text=True).stdout.strip() or "x")
+        out = subprocess.run(["atuin", "history", "list", "--format", "{time}\t{exit}\t{duration}\t{directory}\t{command}"],
+                             capture_output=True, text=True, env=env).stdout
+    else:
+        return []
+    since = dt.datetime.now() - dt.timedelta(days=DAYS)
+    rows = []
+    for line in out.splitlines():
+        p = line.split("\t", 4)
+        if len(p) < 5:
+            continue
+        try:
+            t = dt.datetime.strptime(p[0], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if t < since:
+            continue
+        cmd = " ".join(p[4].split())
+        if not cmd:
+            continue
+        rows.append({"t": t, "exit": p[1], "dur": seconds(p[2]), "cwd": p[3], "cmd": cmd})
+    return rows
+
+
+def recall_error(cmd: str) -> str:
+    d = DATA / "recall"
+    if not d.exists():
+        return ""
+    for f in sorted(d.glob("*.jsonl"), reverse=True)[:DAYS]:
+        for line in reversed(f.read_text(errors="ignore").splitlines()):
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("cmd") == cmd and e.get("status") not in (0, None):
+                return "\n".join(str(e.get("out", "")).splitlines()[-12:])
+    return ""
+
+
+def key(cmd: str, n: int = 3) -> str:
+    return " ".join(cmd.split()[:n])
+
+
+def report() -> dict:
+    rows = history()
+    out: dict = {"failing": [], "not_found": [], "lookups": [], "rituals": [], "slow": [], "doctor": []}
+    if not rows:
+        return out
+
+    # 1. the same command keeps failing
+    fails = Counter(key(r["cmd"]) for r in rows if r["exit"] not in ("0", "", "130", "141", "148", "127"))
+    last_fail = {key(r["cmd"]): r for r in rows if r["exit"] not in ("0", "", "127")}
+    for k, n in fails.most_common(8):
+        if n < 3:
+            break
+        r = last_fail[k]
+        out["failing"].append({"cmd": mask(r["cmd"])[:200], "times": n, "where": short(r["cwd"]),
+                               "error": mask(recall_error(r["cmd"]))[:1200]})
+
+    # 2. command not found
+    nf = Counter(r["cmd"].split()[0] for r in rows if r["exit"] == "127")
+    out["not_found"] = [{"cmd": c, "times": n} for c, n in nf.most_common(6) if n >= 2]
+
+    # 3. looked up again and again
+    topics = Counter()
+    for r in rows:
+        m = LOOKUP.match(r["cmd"])
+        if m:
+            topic = (m.group(2) or m.group(3) or "").strip()
+            topic = " ".join(topic.strip("\"'").split()[:4])
+            if topic:
+                topics[(m.group(1) or "--help").split()[0] + ": " + mask(topic)[:80]] += 1
+    out["lookups"] = [{"what": t, "times": n} for t, n in topics.most_common(10) if n >= 2]
+
+    # 4. rituals: the same 3 commands in a row, in the same folder, on different days
+    seq = defaultdict(set)
+    by_dir = defaultdict(list)
+    for r in sorted(rows, key=lambda r: r["t"]):
+        by_dir[r["cwd"]].append(r)
+    for cwd, rs in by_dir.items():
+        for a, b, c in zip(rs, rs[1:], rs[2:]):
+            if (c["t"] - a["t"]).total_seconds() > 1800:
+                continue
+            trio = (key(a["cmd"], 4), key(b["cmd"], 4), key(c["cmd"], 4))
+            if len(set(trio)) == 3 and not any(x.startswith(("cd", "z ", "ls", "ll", "clear")) for x in trio):
+                seq[(cwd, trio)].add(a["t"].date())
+    rituals = sorted(((len(days), cwd, trio) for (cwd, trio), days in seq.items() if len(days) >= 3), reverse=True)
+    out["rituals"] = [{"where": short(cwd), "commands": [mask(x) for x in trio], "days": n} for n, cwd, trio in rituals[:5]]
+
+    # 5. slow commands you run a lot
+    durs = defaultdict(list)
+    for r in rows:
+        if r["exit"] == "0" and not r["cmd"].startswith(("ssh", "nvim", "vim", "claude", "y ", "lazygit", "btop", "sleep", "watch", "tail -f", "docker compose up", "pnpm dev", "npm run dev", "just dev")):
+            durs[key(r["cmd"])].append(r["dur"])
+    slow = [(sorted(v)[len(v) // 2], k, len(v)) for k, v in durs.items() if len(v) >= 5]
+    out["slow"] = [{"cmd": mask(k), "median_s": round(m), "times": n} for m, k, n in sorted(slow, reverse=True) if m >= 45][:5]
+
+    # 6. what dot doctor warns about
+    doctor = dotfiles_repo() / "tests" / "doctor.sh"
+    if doctor.exists() and not os.environ.get("DOT_EVOLVE_NO_DOCTOR"):
+        try:
+            r = subprocess.run(["bash", str(doctor)], capture_output=True, text=True, timeout=90)
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", r.stdout)
+            out["doctor"] = [l.strip()[2:].strip() for l in clean.splitlines() if l.strip().startswith(("!", "✗"))][:10]
+        except subprocess.TimeoutExpired:
+            pass
+    return out
+
+
+def worth_it(rep: dict) -> bool:
+    return any(rep[k] for k in ("failing", "not_found", "lookups", "rituals", "slow", "doctor"))
+
+
+def render(rep: dict) -> str:
+    L = []
+    if rep["failing"]:
+        L.append("## Commands that kept failing")
+        for f in rep["failing"]:
+            L.append(f"- `{f['cmd']}` — failed {f['times']}× (in {f['where']})")
+            if f["error"]:
+                L.append("  last error:\n" + "\n".join("    " + l for l in f["error"].splitlines()))
+    if rep["not_found"]:
+        L.append("## \"command not found\"")
+        L += [f"- `{x['cmd']}` — {x['times']}×" for x in rep["not_found"]]
+    if rep["lookups"]:
+        L.append("## Looked up again and again")
+        L += [f"- {x['what']} — {x['times']}×" for x in rep["lookups"]]
+    if rep["rituals"]:
+        L.append("## The same commands in a row, on different days")
+        L += [f"- in {x['where']} on {x['days']} days: " + " → ".join(f"`{c}`" for c in x["commands"]) for x in rep["rituals"]]
+    if rep["slow"]:
+        L.append("## Slow commands you run a lot")
+        L += [f"- `{x['cmd']}` — usually {x['median_s']}s, {x['times']}×" for x in rep["slow"]]
+    if rep["doctor"]:
+        L.append("## dot doctor warns")
+        L += [f"- {x}" for x in rep["doctor"]]
+    return "\n".join(L)
+
+
+TASK = """Improve these dotfiles from the user's friction of the last week (report below).
+
+Pick the 1–4 changes with the biggest payoff that are small and safe, e.g. an alias or shell
+function, a navi cheat (config/navi/cheats), an install.sh / Brewfile entry for a missing
+tool, a config tweak, a clearer error, docs in README.md and `dot keys`. One commit per
+change, Conventional Commit messages. Skip anything that is really a project's problem, not
+the dotfiles'. Rules:
+- Read README.md first. Keep Linux AND macOS working (macOS /bin/bash is 3.2).
+- Any AI goes through config/scripts/dot-ai (subscription login only, never an API key).
+- Don't add services that send data anywhere, no secrets, no client names, paths or command
+  arguments from the report in code, commits or the report you write — describe them generically.
+- Run `bash tests/lint.sh`, `bash tests/work.sh` and `bash tests/features.sh`; they must pass.
+- If nothing is worth changing, change nothing and say so (STATUS: NEEDS-YOU).
+
+{report}"""
+
+
+def queue(rep: dict) -> None:
+    repo = dotfiles_repo()
+    if not (repo / ".git").exists():
+        sys.exit(f"dot evolve: no dotfiles repo at {repo}")
+    text = render(rep)
+    # same Python (needs no uv)
+    r = subprocess.run([sys.executable, str(SCRIPTS / "dot-night"), "add-json"], input=json.dumps({
+        "repo": str(repo), "task": TASK.format(report=text), "title": "evolve: fixes from this week's friction",
+        "auto_pr": True, "kind": "evolve"}), text=True, capture_output=True)
+    if r.returncode != 0:
+        sys.exit(r.stderr.strip() or "dot evolve: couldn't queue")
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "evolve-last").write_text(str(int(time.time())))
+    print(r.stdout.strip())
+
+
+def due() -> bool:
+    try:
+        last = int((STATE / "evolve-last").read_text())
+    except (FileNotFoundError, ValueError):
+        return True
+    return time.time() - last > 6.5 * 86400
+
+
+def main():
+    p = argparse.ArgumentParser(prog="dot evolve", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--queue", action="store_true")
+    p.add_argument("--auto", action="store_true")
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args()
+    if a.auto:
+        if os.environ.get("DOT_EVOLVE") == "0" or not due():
+            return
+        rep = report()
+        if worth_it(rep):
+            queue(rep)
+        else:
+            STATE.mkdir(parents=True, exist_ok=True)
+            (STATE / "evolve-last").write_text(str(int(time.time())))
+        return
+    rep = report()
+    if a.json:
+        print(json.dumps(rep, indent=2))
+        return
+    if not worth_it(rep):
+        print("No friction worth fixing this week. 🎉")
+        return
+    print(render(rep))
+    if a.queue:
+        print()
+        queue(rep)
+    else:
+        print("\n\033[2mdot evolve --queue → Claude fixes some of it tonight; a draft PR waits in the morning\033[0m")
+
+
+if __name__ == "__main__":
+    main()

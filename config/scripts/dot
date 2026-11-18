@@ -21,6 +21,10 @@
 #   dot recall PATTERN  search what your commands printed (--ai "question", --last 5)
 #   dot habits          turn long commands you keep typing into aliases
 #   dot mode share [CLIENT]  screen-share mode (dot mode work to end)
+#   dot invite          a read-only browser link to one terminal tab (--for 2h, stop)
+#   dot try owner/repo  any repo in a throwaway container + a tour (list, shell, rm)
+#   dot janitor         free disk space old projects sit on (node_modules, caches…)
+#   dot evolve          this week's friction → a draft PR that fixes some of it
 #   cd "$(dot dir)"     go to the repo
 set -euo pipefail
 
@@ -96,6 +100,14 @@ Work (AI uses your Claude subscription only — never an API key)
   dot habits          your long repeated commands → aliases or navi recipes (hint once a week)
   dot mode share acme screen share: bigger font, no notifications, other clients' tabs hidden,
                       `cat .env`-style commands ask twice · dot mode work = back to normal
+  dot invite          read-only browser link (+ QR) to a new shared tab; they can't type
+                      (--for 2h, --local, dot invite status / stop)
+  dot try owner/repo  clone + install in a locked-down container, Claude tour incl. red flags,
+                      shell inside; gone after 24h (--keep, --port 3000, list, rm)
+  dot janitor         node_modules/.turbo/dist/target… of projects untouched 30+ days,
+                      old Docker images, unused caches → asks, then frees (hint weekly)
+  dot evolve          weekly from your failures, lookups and rituals: Claude fixes the
+                      dotfiles at night and opens a draft PR (DOT_EVOLVE=0 = off)
 
 Neovim
   Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
@@ -217,11 +229,12 @@ case "${1:-help}" in
         shift
         exec "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-new" "$@"
         ;;
-    mode)
+    mode|invite|try)
+        tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-$1"
         shift
-        exec "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-mode" "$@"
+        exec "$tool" "$@"
         ;;
-    night|recall|habits)
+    night|recall|habits|janitor|evolve)
         tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-$1"
         shift
         if command -v uv >/dev/null 2>&1; then

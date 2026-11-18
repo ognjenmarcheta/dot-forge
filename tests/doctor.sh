@@ -80,6 +80,10 @@ if [ "$OS" = Linux ] && [ -z "${CI:-}" ]; then
     else warn "WezTerm isn't the regular build (Flatpak?) — re-run install.sh"; fi
 fi
 if grep -q agent-notify "$HOME/.claude/settings.json" 2>/dev/null; then ok "Claude Code alert hooks"; else warn "Claude Code alert hooks not set up (run install.sh)"; fi
+for t in tmux ttyd cloudflared; do
+    if have "$t"; then ok "$t (dot invite)"; else warn "$t missing — dot invite off (run install.sh)"; fi
+done
+if have docker || have podman; then ok "container engine (dot try)"; else warn "no Docker / Podman — dot try off"; fi
 if [ -z "${CI:-}" ]; then
     if [ "$OS" = Darwin ]; then
         # (not `launchctl list | grep -q`: grep exits early, launchctl gets

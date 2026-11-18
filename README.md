@@ -149,6 +149,30 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   paused for other projects, and commands that print secrets (`cat .env`,
   `printenv`, `gh auth token`, `kubectl get secret`…) need a second Enter.
   `dot mode work` ends it.
+- **`dot invite`**: a read-only browser link (and a QR code, copied) to a new
+  shared tab, for a client or colleague to watch a deploy or a debugging
+  session: tmux (its own server, no prefix key) attached read-only by ttyd on
+  127.0.0.1 under a secret path, made public by a Cloudflare quick tunnel (no
+  account). Share mode is on meanwhile; the link dies after `--for` (default
+  1 h, max 8 h) or `dot invite stop`; `--local` = LAN / Tailscale only.
+- **`dot try owner/repo`**: clones any repo (no git hooks, submodules or
+  symlinks), installs its dependencies inside a container with no
+  capabilities, no privilege escalation, a non-root user, CPU / memory / process
+  limits and only the repo mounted, then Claude gives a tour — what it is, how
+  it's organised, how to run it, and a verdict on red flags (install hooks,
+  `curl | sh`, credential paths, obfuscated code) — and opens a shell inside.
+  Deletes itself after 24 h (`--keep`, `--port 3000`, `list`, `shell`, `rm`).
+- **`dot janitor`**: in projects untouched for 30+ days, the folders git ignores
+  and that rebuild themselves (`node_modules`, `.turbo`, `.next`, `dist`,
+  `target`, `.venv`…) — never tracked files, never a repo something runs in —
+  plus Docker images and build cache unused for 30 days (never volumes) and
+  unused pnpm / uv cache. Asks first; a weekly hint shows when 5+ GB could go.
+- **`dot evolve`**: once a week the night shift reads where you struggled —
+  commands that kept failing (with the error from recall), "command not
+  found", repeated lookups, the same three commands you type every morning,
+  slow commands, `dot doctor` warnings — and Claude improves the dotfiles in a
+  worktree, runs the tests and opens a **draft PR**. Secrets are masked; client
+  names and paths stay out of the code and the PR. `DOT_EVOLVE=0` turns it off.
 - **Prompt**: Starship with clickable user / path segments / git branch; `↑` = `cd ..`.
 - **Shell**: `ls`/`ll` via eza (icons, git status, clickable), `cat`/`man` via bat,
   `z` + Tab menu of frequent folders, Ctrl+R = atuin history, Ctrl+T / Alt+C =
@@ -173,8 +197,11 @@ nothing. It uses the self-hosted runner on the workstation (`kaine-ci-linux`,
 like kaine-forge and ordina-forge) and falls back to GitHub's runners when that
 is down. `macos.yml` does the same on macOS with `/bin/bash` 3.2, only when the
 installer or scripts change (macOS minutes are expensive). `tests/work.sh` and
-`tests/features.sh` test standups, night shift, recall, habits, share mode and
-`dot new` with stand-in `claude` / `gh`. `new-project.yml` runs `dot new --local`
+`tests/features.sh` test standups, night shift, recall, habits, share mode,
+`dot new`, `dot invite`, `dot try`, `dot janitor` and `dot evolve` with stand-in
+`claude` / `gh` / `docker`; CI also runs a real `dot invite` (ttyd: secret path
+works, nothing else does) and a real `dot try` (checks from inside the sandbox:
+not root, no capabilities, no Docker socket). `new-project.yml` runs `dot new --local`
 against the real Kaine Forge template weekly and when `dot-new` changes.
 
 ## Not in this repo (on purpose)

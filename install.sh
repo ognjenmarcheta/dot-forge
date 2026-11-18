@@ -261,7 +261,7 @@ install_linux_packages() {
     sudo apt-get $APT_OPTS update -qq
     apt_install git curl unzip build-essential zsh \
         ripgrep fd-find jq btop lazygit fastfetch thefuck \
-        wl-clipboard libnotify-bin duf gnupg
+        wl-clipboard libnotify-bin duf gnupg tmux ttyd qrencode
     # yazi previews: big (ghostscript, ffmpeg libs…), and nothing to test in CI
     [ "$IN_CI" -eq 1 ] || apt_install ffmpegthumbnailer poppler-utils imagemagick 7zip
     have node || apt_install nodejs npm    # Mason language servers, Copilot, mcphub
@@ -288,6 +288,7 @@ install_linux_packages() {
     install_release_bin just     casey/just         "just-.*-${a}-unknown-linux-musl\.tar\.gz$"
     install_release_bin fx       antonmedv/fx       "fx_linux_${go_arch}$"
     install_release_bin xh       ducaale/xh         "xh-v.*-${a}-unknown-linux-musl\.tar\.gz$"
+    install_release_bin cloudflared cloudflare/cloudflared "cloudflared-linux-${go_arch}$"   # dot invite links
 
     step "WezTerm (official apt repository)"
     # The regular build, not the Flatpak: its background session server keeps
