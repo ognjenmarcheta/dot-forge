@@ -99,6 +99,7 @@ end
 
 -- tmux status
 wezterm.on("update-right-status", function(window, _)
+    require("features").clear_seen(window) -- you're looking at it: drop its ● marker
     local SOLID_LEFT_ARROW = ""
     local ARROW_FOREGROUND = { Foreground = { Color = "#c6a0f6" } }
     local prefix = ""
@@ -122,8 +123,16 @@ end)
 
 wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_width)
     local index = tab.tab_index
-    local title = tab.active_pane.title or "shell"
+    -- a name you gave the tab (palette → Rename tab, project tabs) wins
+    local title = (tab.tab_title ~= "" and tab.tab_title) or tab.active_pane.title or "shell"
+    -- Claude Code waiting (●) / finished (✓) in this tab
+    local marker = require("features").tab_marker(tab.tab_id)
     local prefix = string.format(" %d: ", index)
+    if marker == "waiting" then
+        prefix = string.format(" %d: ● ", index)
+    elseif marker == "done" then
+        prefix = string.format(" %d: ✓ ", index)
+    end
     local suffix = " "
     local available_width = math.max(max_width - #prefix - #suffix, 0)
     local label = truncate_title(title, available_width)
@@ -133,6 +142,12 @@ wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_wid
 
     if tab.is_active then
         bg = "#b7bdf8"
+        fg = "#1e2030"
+    elseif marker == "waiting" then
+        bg = "#f5a97f" -- orange: needs you
+        fg = "#1e2030"
+    elseif marker == "done" then
+        bg = "#a6da95" -- green: finished
         fg = "#1e2030"
     elseif hover then
         bg = "#494d64"

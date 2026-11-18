@@ -15,8 +15,8 @@ run() { # label, command...
     fi
 }
 
-bash_files="install.sh tests/doctor.sh tests/lint.sh config/scripts/dot config/scripts/check-node-updates.sh"
-shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/bashrc"
+bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/agent-notify config/scripts/check-node-updates.sh"
+shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/bashrc"
 
 echo "Syntax"
 for f in $bash_files $shell_files; do run "bash -n $f" bash -n "$f"; done
@@ -52,6 +52,7 @@ run "mise config.toml" python3 -c "import tomllib,sys; tomllib.load(open('config
 run "starship.toml" python3 -c "import tomllib; tomllib.load(open('config/starship.toml','rb'))"
 run "lazy-lock.json" python3 -c "import json; json.load(open('config/nvim/lazy-lock.json'))"
 if python3 -c "import yaml" 2>/dev/null; then
+    run "navi config.yaml" python3 -c "import yaml; yaml.safe_load(open('config/navi/config.yaml'))"
     run "lazygit config.yml" python3 -c "import yaml; yaml.safe_load(open('config/lazygit/config.yml'))"
 fi
 

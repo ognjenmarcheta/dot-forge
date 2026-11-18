@@ -17,6 +17,12 @@ brew "mise"             # node / pnpm / python versions (config/mise)
 brew "eza"              # ls with icons, git status, clickable entries
 brew "bat"              # cat / man pages with syntax highlighting
 brew "git-delta"        # nicer git diffs (git + lazygit pager)
+brew "tealdeer"         # `tldr tar`: short examples instead of man pages
+brew "navi"             # Ctrl+G: saved commands with blanks to fill in
+brew "carapace"         # Tab completion for hundreds of CLIs
+brew "just"             # per-project task runner (justfile)
+brew "fx"               # JSON viewer
+brew "xh"               # friendlier curl for APIs
 
 # editor + friends
 # (Neovim itself is NOT from Homebrew: Homebrew ships 0.12, this config is

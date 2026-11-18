@@ -1,0 +1,27 @@
+% kubernetes, kubectl, k3s
+
+# Pods in all namespaces
+kubectl get pods -A -o wide
+
+# Follow a pod's logs
+kubectl logs -f -n <namespace> <pod>
+
+# Shell in a pod
+kubectl exec -it -n <namespace> <pod> -- sh
+
+# Describe a pod (events at the bottom explain most failures)
+kubectl describe pod -n <namespace> <pod>
+
+# Restart a deployment
+kubectl rollout restart deployment/<deployment> -n <namespace>
+
+# Forward a service port to localhost
+kubectl port-forward -n <namespace> svc/<service> <local_port>:<remote_port>
+
+# Self-hosted CI runners (kaine-forge ARC)
+kubectl --kubeconfig ~/.kube/k3s-arc.yaml get pods -n arc-runners
+
+$ namespace: kubectl get ns -o name | sed 's|namespace/||'
+$ pod: kubectl get pods -n <namespace> -o name | sed 's|pod/||'
+$ deployment: kubectl get deploy -n <namespace> -o name | sed 's|deployment.apps/||'
+$ service: kubectl get svc -n <namespace> -o name | sed 's|service/||'

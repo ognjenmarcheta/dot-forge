@@ -1,0 +1,35 @@
+% system, linux, network
+
+# What is listening on a port
+sudo ss -ltnp | grep -E ':<port>\b'
+
+# Kill whatever is using a port
+fuser -k <port>/tcp
+
+# Biggest folders here
+dust -d 1
+
+# Disk usage per drive
+duf
+
+# Find big files (over 500 MB) under a folder
+fd -t f -S +500m . <folder>
+
+# My public IP
+xh -b https://ifconfig.me
+
+# Watch a command every 2 seconds
+watch -n 2 '<command>'
+
+# Convert a video to a smaller mp4
+ffmpeg -i <input> -vcodec libx264 -crf 28 -preset veryfast <output>
+
+# Turn a video into a gif
+ffmpeg -i <input> -vf "fps=12,scale=800:-1:flags=lanczos" -loop 0 <output>.gif
+
+# Systemd: follow a service's logs
+journalctl -fu <unit>
+
+$ folder: echo . ; fd -t d -d 2
+$ unit: systemctl list-units --type=service --no-legend | awk '{print $1}'
+$ input: fd -e mp4 -e mov -e mkv -e webm
