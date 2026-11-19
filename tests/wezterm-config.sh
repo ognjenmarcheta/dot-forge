@@ -31,6 +31,11 @@ need "Leader Space (quick select)" "key = '(phys:)?Space', mods = 'LEADER', acti
 need "Shift+Up (prev command)" "key = 'UpArrow', mods = 'SHIFT'"
 need "Ctrl+h (pane/split nav)" "key = 'h', mods = 'CTRL'"
 need "Leader w (workspaces)" "key = 'w', mods = 'LEADER'"
+if printf '%s' "$keys" | grep -q 'Close.*confirm = true'; then
+    echo "✗ closing a tab / pane asks for confirmation"; fails=1
+else
+    echo "✓ tabs and panes close without asking"
+fi
 rm -rf "$tmp"
 [ $fails -eq 0 ] && echo "wezterm config: all good"
 exit $fails
