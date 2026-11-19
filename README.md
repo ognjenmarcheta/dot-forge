@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/project-banner.png" width="800" alt="dotfiles — one terminal setup for every machine and every agent" />
+  <img src="media/project-banner.png" width="800" alt="Dot Forge — one terminal setup for every machine and every agent" />
 </p>
 
 <p align="center">
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <b>One terminal setup for every machine and every agent.</b><br>
+  <b>Dot Forge: one terminal setup for every machine and every agent.</b><br>
   WezTerm · zsh · Starship · Neovim (EcoVim v5) · atuin · fzf · zoxide · mise · lazygit · Claude Code
 </p>
 
@@ -27,7 +27,7 @@
 
 ## 👋 What this is
 
-A personal terminal setup that installs the same way on **macOS** and
+**Dot Forge** is my dotfiles: a personal terminal setup that installs the same way on **macOS** and
 **Linux (Ubuntu/Debian)**. One script links the configs and installs the
 tools, and one command (`dot`) keeps them up to date.
 
@@ -51,7 +51,7 @@ tools, and one command (`dot`) keeps them up to date.
 
 ## 🚀 Quick start
 
-Clone it to `~/Github/dotfiles` and run the installer. It installs everything else, including `gh`.
+Clone it to `~/Github/dotfiles` (the folder `dot` looks in by default) and run the installer. It installs everything else, including `gh`.
 
 <details open>
 <summary><b>🍎 macOS</b></summary>
@@ -59,7 +59,7 @@ Clone it to `~/Github/dotfiles` and run the installer. It installs everything el
 ```bash
 xcode-select --install                     # git + compilers (wait for it to finish)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-git clone https://github.com/ognjenmarcheta/dotfiles ~/Github/dotfiles
+git clone https://github.com/ognjenmarcheta/dot-forge ~/Github/dotfiles
 ~/Github/dotfiles/install.sh
 ```
 
@@ -70,7 +70,7 @@ git clone https://github.com/ognjenmarcheta/dotfiles ~/Github/dotfiles
 
 ```bash
 sudo apt install -y git
-git clone https://github.com/ognjenmarcheta/dotfiles ~/Github/dotfiles
+git clone https://github.com/ognjenmarcheta/dot-forge ~/Github/dotfiles
 ~/Github/dotfiles/install.sh
 ```
 
@@ -520,7 +520,7 @@ tests/doctor.sh               # on a machine with the setup installed (--nvim fo
 
 ## 📄 License
 
-A personal setup: only the owner commits, and pull requests and issues are
+Dot Forge is a personal setup: only the owner commits, and pull requests and issues are
 turned off. **Fork or clone it freely** and make it yours.
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
