@@ -272,6 +272,21 @@ git -C "$U/dots" switch -q -c scratch
 out=$(DOTFILES_DIR="$U/dots" bash "$S/dot" upgrade 2>&1); rc=$?
 check "branch without upstream: says so" '[ "$rc" = 1 ] && [[ "$out" == *"no upstream"* ]]'
 
+echo "z typos"
+if command -v zoxide >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; then
+    mkdir -p "$T/Github/web-shop/apps" "$T/Github/billing"
+    for sh in bash zsh; do
+        command -v "$sh" >/dev/null 2>&1 || continue
+        out=$(cd / && _ZO_DATA_DIR="$T/zo-$sh" "$sh" -c '. "$1"; zoxide add "$2" "$2/apps" "$3"; z web-shp 2>&1; pwd; z nothing-like-it 2>&1; echo "rc=$?"' _ \
+            "$DOT/config/shell/aliases.sh" "$T/Github/web-shop" "$T/Github/billing" 2>&1)
+        nl=$'\n'
+        check "$sh: a typo jumps to the closest folder" '[[ "$out" == *"going to $T/Github/web-shop"* && "$out" == *"${nl}$T/Github/web-shop${nl}"* ]]'
+        check "$sh: no match is still an error" '[[ "$out" == *"rc=1"* ]]'
+    done
+else
+    echo "  - zoxide or fzf not installed: skipped"
+fi
+
 echo "dot try"
 cat > "$FB/docker" <<'EOF'
 #!/usr/bin/env bash
