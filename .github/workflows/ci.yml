@@ -34,6 +34,12 @@ jobs:
         run: bash tests/work.sh
       - name: night shift / recall / habits / share mode / dot new
         run: bash tests/features.sh
+      - name: startup card / dot tip
+        run: bash tests/hello.sh
+      - name: dot ports / dot name
+        run: bash tests/ports.sh
+      - name: dot wrapped / credits / calendar
+        run: bash tests/wrapped.sh
       - name: dot invite for real (tmux + ttyd, --local)
         run: |
           export XDG_STATE_HOME="$RUNNER_TEMP/state"

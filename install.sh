@@ -78,6 +78,14 @@ link() { # source target
 link_configs() {
     step "Linking configs into $(tilde "$CONFIG_HOME")"
     local item
+    # links to configs this repo no longer has (e.g. neofetch → the startup card)
+    for item in "$CONFIG_HOME"/*; do
+        if [ -L "$item" ] && [ ! -e "$item" ]; then
+            case "$(readlink "$item")" in
+                "$DOTFILES"/*) rm -f "$item"; ok "removed $(tilde "$item") (no longer in the repo)" ;;
+            esac
+        fi
+    done
     for item in "$DOTFILES"/config/*; do
         link "$item" "$CONFIG_HOME/$(basename "$item")"
     done
@@ -269,7 +277,8 @@ install_linux_packages() {
     sudo apt-get $APT_OPTS update -qq
     apt_install git curl unzip build-essential zsh \
         ripgrep fd-find jq btop lazygit fastfetch thefuck \
-        wl-clipboard libnotify-bin duf gnupg tmux ttyd qrencode
+        wl-clipboard libnotify-bin duf gnupg tmux ttyd qrencode \
+        libcap2-bin fontconfig xz-utils
     # yazi previews: big (ghostscript, ffmpeg libs…), and nothing to test in CI
     [ "$IN_CI" -eq 1 ] || apt_install ffmpegthumbnailer poppler-utils imagemagick 7zip
     have node || apt_install nodejs npm    # Mason language servers, Copilot, mcphub
@@ -618,6 +627,87 @@ EOF
     fi
 }
 
+install_nerd_font() {
+    # JetBrains Mono with Nerd Font icons: eza / yazi / Neovim icons in terminals
+    # and editors other than WezTerm (WezTerm ships its own copy of the symbols).
+    # macOS: the Brewfile cask. Linux: the official release into ~/.local/share/fonts.
+    [ "$OS" = Linux ] || return 0
+    [ "$IN_CI" -eq 1 ] && return 0
+    local dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts/JetBrainsMonoNerdFont"
+    if ls "$dir"/*.ttf >/dev/null 2>&1 && [ "$UPGRADE" -eq 0 ]; then return 0; fi
+    step "Nerd Font (JetBrains Mono, for icons outside WezTerm)"
+    local tmp; tmp="$(mktemp -d)"
+    if curl -fsSL -o "$tmp/font.tar.xz" "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.tar.xz" \
+        && mkdir -p "$dir" && tar -xJf "$tmp/font.tar.xz" -C "$dir" --wildcards '*.ttf' 2>/dev/null; then
+        have fc-cache && fc-cache -f "$dir" >/dev/null 2>&1
+        ok "JetBrainsMono Nerd Font -> $(tilde "$dir")"
+    else
+        warn "Nerd Font download failed — icons outside WezTerm may show as boxes (re-run install.sh)"
+    fi
+    rm -rf "$tmp"
+}
+
+setup_caddy() {
+    # dot name: https://NAME.localhost → a local port, through Caddy running as
+    # a user service (launchd / systemd). Names: ~/.config/dotfiles/names.tsv.
+    step "Local HTTPS names (Caddy, for dot name)"
+    if [ "$OS" = Linux ]; then
+        local go_arch
+        if [ "$ARCH" = x86_64 ]; then go_arch=amd64; else go_arch=arm64; fi
+        install_release_bin caddy caddyserver/caddy "caddy_.*_linux_${go_arch}\.tar\.gz$"
+    fi
+    have caddy || { warn "caddy missing — dot name off"; return 0; }
+    [ "$IN_CI" -eq 1 ] && return 0
+    local caddy_bin cf state="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/caddy"
+    caddy_bin="$(command -v caddy)"
+    if [ "$OS" = Linux ] && have setcap; then
+        # port 443 without root (an upgrade replaces the binary, so check every run)
+        if ! getcap "$(readlink -f "$caddy_bin")" 2>/dev/null | grep -q cap_net_bind_service; then
+            if sudo setcap cap_net_bind_service=+ep "$(readlink -f "$caddy_bin")"; then ok "caddy may listen on 443"
+            else warn "setcap failed — dot name can't use 443: sudo setcap cap_net_bind_service=+ep $caddy_bin"; fi
+        fi
+    fi
+    cf="$("$DOTFILES/config/scripts/dot-ports" caddyfile)"
+    if [ "$OS" = Darwin ]; then
+        local plist="$HOME/Library/LaunchAgents/software.byteforge.dot-caddy.plist"
+        mkdir -p "$(dirname "$plist")" "$state"
+        cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>software.byteforge.dot-caddy</string>
+  <key>ProgramArguments</key><array><string>$caddy_bin</string><string>run</string><string>--config</string><string>$cf</string><string>--adapter</string><string>caddyfile</string><string>--watch</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$state/caddy.log</string>
+  <key>StandardErrorPath</key><string>$state/caddy.log</string>
+</dict></plist>
+PLIST
+        launchctl unload "$plist" 2>/dev/null || true
+        launchctl load "$plist" 2>/dev/null && ok "Caddy runs in the background (launchd)" || warn "launchctl load failed — log out and in"
+        return 0
+    fi
+    have systemctl || { warn "no systemd — dot name starts Caddy itself when needed"; return 0; }
+    local d="$HOME/.config/systemd/user"
+    mkdir -p "$d"
+    cat > "$d/dot-caddy.service" <<UNIT
+[Unit]
+Description=dot name: https://NAME.localhost (Caddy)
+
+[Service]
+ExecStart=$caddy_bin run --config $cf --adapter caddyfile --watch
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+UNIT
+    if systemctl --user daemon-reload 2>/dev/null && systemctl --user enable --now dot-caddy.service >/dev/null 2>&1; then
+        ok "dot-caddy.service on"
+    else
+        warn "couldn't start Caddy's service — systemctl --user enable --now dot-caddy"
+    fi
+}
+
 main() {
     printf '%sDotfiles%s from %s on %s/%s\n' "$c_info" "$c_off" "$(tilde "$DOTFILES")" "$OS" "$ARCH"
     mkdir -p "$BIN"
@@ -639,6 +729,8 @@ main() {
         setup_tools
         setup_claude_hooks
         setup_night_shift
+        setup_caddy
+        install_nerd_font
         setup_git_identity
         setup_default_shell
         setup_gh

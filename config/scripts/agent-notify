@@ -34,6 +34,19 @@ case "$state" in
     working) ;;
 esac
 
+# A record for the startup card (agents waiting) and dot wrapped (agent hours):
+#   ~/.cache/dotfiles/agents/<session>      STATE<TAB>PROJECT<TAB>EPOCH (latest)
+#   ~/.local/share/dotfiles/agents.log      EPOCH<TAB>STATE<TAB>PROJECT<TAB>SESSION
+sid=""
+[ -n "$input" ] && command -v jq >/dev/null 2>&1 && sid="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+now="$(date +%s)"
+agents_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/agents"
+log_dir="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles"
+if mkdir -p "$agents_dir" "$log_dir" 2>/dev/null; then
+    printf '%s\t%s\t%s\t%s\n' "$now" "$state" "$project" "$sid" >> "$log_dir/agents.log"
+    case "$sid" in ''|*/*) ;; *) printf '%s\t%s\t%s\n' "$state" "$project" "$now" > "$agents_dir/$sid" ;; esac
+fi
+
 if [ "${TERM_PROGRAM:-}" = WezTerm ] && command -v jq >/dev/null 2>&1; then
     # Hooks have no terminal: Claude Code writes `terminalSequence` from our
     # JSON reply to the terminal for us (interactive sessions only).

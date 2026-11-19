@@ -84,6 +84,28 @@ for t in tmux ttyd cloudflared; do
     if have "$t"; then ok "$t (dot invite)"; else warn "$t missing — dot invite off (run install.sh)"; fi
 done
 if have docker || have podman; then ok "container engine (dot try)"; else warn "no Docker / Podman — dot try off"; fi
+if have caddy; then
+    ok "caddy (dot name)"
+    if "$DOT/config/scripts/dot-ports" trusted; then ok "Caddy's local certificates are trusted"
+    else warn "Caddy's certificates not trusted yet — the first \`dot name\` asks (or: caddy trust)"; fi
+    if [ -z "${CI:-}" ]; then
+        if [ "$OS" = Darwin ]; then
+            launchctl print "gui/$(id -u)/software.byteforge.dot-caddy" >/dev/null 2>&1 && ok "Caddy service running" || warn "Caddy service off — re-run install.sh (dot name starts it by hand)"
+        elif have systemctl; then
+            systemctl --user is-active dot-caddy >/dev/null 2>&1 && ok "Caddy service running" || warn "Caddy service off — re-run install.sh (dot name starts it by hand)"
+        fi
+    fi
+else
+    warn "caddy missing — dot name off (run install.sh)"
+fi
+if [ -z "${CI:-}" ]; then
+    nerd=""
+    for d in "$HOME/Library/Fonts" /Library/Fonts "${XDG_DATA_HOME:-$HOME/.local/share}/fonts" /usr/share/fonts /usr/local/share/fonts; do
+        for f in "$d"/*NerdFont* "$d"/*/*NerdFont* "$d"/*"Nerd Font"* "$d"/*/*"Nerd Font"*; do [ -e "$f" ] && nerd=1 && break 2; done
+    done
+    if [ -n "$nerd" ]; then ok "Nerd Font (icons outside WezTerm)"; else warn "no Nerd Font — icons show as boxes outside WezTerm (run install.sh)"; fi
+fi
+if [ -f "$DOT/config/hello/byteforge.logo" ] && "$DOT/config/scripts/dot-hello" show </dev/null >/dev/null 2>&1; then ok "startup card (dot hello)"; else bad "dot hello fails"; fi
 if [ -z "${CI:-}" ]; then
     if [ "$OS" = Darwin ]; then
         # (not `launchctl list | grep -q`: grep exits early, launchctl gets
@@ -120,7 +142,7 @@ if TERM=xterm-256color bash -ic '
 else
     bad "prompt has no clickable links"
 fi
-for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check _dot_daily; do
+for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check _dot_daily _dot_hello; do
     if TERM=xterm-256color bash -ic "type $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in bash"; fi
 done
 
@@ -133,7 +155,7 @@ if have zsh; then
     else
         bad "prompt has no clickable links"
     fi
-    for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check _dot_daily _dot_share_accept; do
+    for f in z y ai rgf _dot_marks_precmd _dot_fix_precmd _dot_lobby_check _dot_daily _dot_share_accept _dot_hello; do
         if TERM=xterm-256color zsh -ic "whence -w $f" </dev/null >/dev/null 2>&1; then ok "$f"; else bad "$f not defined in zsh"; fi
     done
 fi

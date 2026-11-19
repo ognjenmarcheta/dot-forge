@@ -25,6 +25,13 @@
 #   dot try owner/repo  any repo in a throwaway container + a tour (list, shell, rm)
 #   dot janitor         free disk space old projects sit on (node_modules, caches…)
 #   dot evolve          this week's friction → a draft PR that fixes some of it
+#   dot hello           the ByteForge card new windows open with (setup = what's left to set up)
+#   dot fetch           the card with sparks, for screenshots
+#   dot tip             a feature you haven't used yet (next, all)
+#   dot ports           what's listening: port, project + branch, program, URL (kill / open PORT)
+#   dot name [NAME] [PORT]  https://NAME.localhost → that port, trusted cert (rm NAME; no args = list)
+#   dot wrapped         your week as a card: time per project, top commands, commits, agents
+#   dot credits         the same for today (--yesterday, --line = one line)
 #   cd "$(dot dir)"     go to the repo
 set -euo pipefail
 
@@ -36,7 +43,7 @@ find_repo() {
     printf '%s' "$HOME/Github/dotfiles"
 }
 DOT="$(find_repo)"
-[ -d "$DOT/.git" ] || { echo "dot: no dotfiles repo at $DOT (set DOTFILES_DIR)" >&2; exit 1; }
+[ -e "$DOT/.git" ] || { echo "dot: no dotfiles repo at $DOT (set DOTFILES_DIR)" >&2; exit 1; }
 
 keys() {
     cat <<'EOF'
@@ -108,6 +115,23 @@ Work (AI uses your Claude subscription only — never an API key)
                       old Docker images, unused caches → asks, then frees (hint weekly)
   dot evolve          weekly from your failures, lookups and rituals: Claude fixes the
                       dotfiles at night and opens a draft PR (DOT_EVOLVE=0 = off)
+  dot ports           what's listening, which project / branch / worktree it's from, its URL
+                      (dot ports kill 5173, dot ports open 5173, --json)
+  dot name            https://<repo>.localhost → this repo's dev server, trusted certificate
+                      (dot name api 8080, dot name rm api, dot name = list)
+  dot wrapped         your week: active time, time per project, top commands, commits,
+                      agent hours, night-shift tasks, typos fixed (--since "nov 1", --json)
+  dot credits         today so far (--yesterday); the card shows yesterday's line each morning
+
+Startup card (every new window; DOT_HELLO=0 off, =compact one line)
+  anvil colour        this machine (DOT_MACHINE_COLOR) · the project's inside a repo ·
+                      glowing at night · the client's logo in share mode
+  right side          OS, uptime, battery, disk, RAM · agents waiting · night shift · CI ·
+                      commits not pushed
+  underneath          next meeting (DOT_CALENDAR_ICS) · setup left · yesterday · 💡 tip
+  dot hello setup     logins and setup still missing on this machine (--dismiss)
+  dot tip             today's tip · dot tip next · dot tip all
+  dot fetch           the card with sparks (the first window of the day gets them too)
 
 Neovim
   Alt+↑ / Alt+↓       add cursor above / below (multi-cursor)
@@ -228,6 +252,31 @@ case "${1:-help}" in
     new)
         shift
         exec "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-new" "$@"
+        ;;
+    hello|fetch|tip)
+        here="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+        case "$1" in
+            hello) shift; exec "$here/dot-hello" "$@" ;;
+            fetch) shift; exec "$here/dot-hello" fetch "$@" ;;
+            tip) shift; exec "$here/dot-tip" "$@" ;;
+        esac
+        ;;
+    ports|name)
+        tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-ports"
+        if [ "$1" = name ]; then shift; exec "$tool" name "$@"; fi
+        shift
+        exec "$tool" "$@"
+        ;;
+    wrapped|credits)
+        tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-wrapped"
+        sub="$1"; shift
+        if command -v uv >/dev/null 2>&1; then
+            exec uv run --quiet --script "$tool" "$sub" "$@"
+        elif python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+            exec python3 "$tool" "$sub" "$@"
+        else
+            echo "dot: needs uv or Python 3.11+ (run install.sh)" >&2; exit 1
+        fi
         ;;
     mode|invite|try)
         tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-$1"

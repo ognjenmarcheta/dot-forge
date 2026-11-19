@@ -15,8 +15,8 @@ run() { # label, command...
     fi
 }
 
-bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/dot-ai config/scripts/dot-fix config/scripts/dot-lobby config/scripts/dot-voice config/scripts/dot-status tests/work.sh config/scripts/agent-notify config/scripts/check-node-updates.sh config/scripts/dot-mode config/scripts/dot-new config/scripts/dot-invite config/scripts/dot-try tests/features.sh"
-shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/fix.sh config/shell/lobby.sh config/shell/voice.sh config/shell/share.sh config/shell/daily.sh config/shell/bashrc"
+bash_files="install.sh tests/doctor.sh tests/lint.sh tests/wezterm-config.sh config/scripts/dot config/scripts/dot-ai config/scripts/dot-fix config/scripts/dot-lobby config/scripts/dot-voice config/scripts/dot-status tests/work.sh config/scripts/agent-notify config/scripts/check-node-updates.sh config/scripts/dot-mode config/scripts/dot-new config/scripts/dot-invite config/scripts/dot-try tests/features.sh config/scripts/dot-hello config/scripts/dot-tip config/scripts/dot-ports tests/ports.sh tests/wrapped.sh tests/hello.sh"
+shell_files="config/shell/aliases.sh config/shell/ai.sh config/shell/clickable-prompt.sh config/shell/notify.sh config/shell/marks.sh config/shell/fix.sh config/shell/lobby.sh config/shell/voice.sh config/shell/share.sh config/shell/daily.sh config/shell/hello.sh config/shell/bashrc"
 
 echo "Syntax"
 for f in $bash_files $shell_files; do run "bash -n $f" bash -n "$f"; done
@@ -54,7 +54,7 @@ else
 fi
 
 echo "Python"
-for py in dot-work dot-night dot-recall dot-habits dot-janitor dot-evolve; do
+for py in dot-work dot-night dot-recall dot-habits dot-janitor dot-evolve dot-wrapped dot-calendar; do
     run "$py parses" python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "config/scripts/$py"
 done
 
