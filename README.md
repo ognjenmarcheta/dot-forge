@@ -520,6 +520,9 @@ tests/doctor.sh               # on a machine with the setup installed (--nvim fo
 
 ## 📄 License
 
+A personal setup: only the owner commits, and pull requests and issues are
+turned off. **Fork or clone it freely** and make it yours.
+
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 Security reports: [`SECURITY.md`](SECURITY.md). How to change things:
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
