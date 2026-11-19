@@ -142,7 +142,7 @@ if command -v python3 >/dev/null 2>&1; then
     git init -q "$T/Github/realproj"
     (cd "$T/Github/realproj" && exec python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1) & srv=$!
     for _ in $(seq 1 50); do python3 -c "import socket,sys; socket.create_connection(('127.0.0.1',$port),0.2)" 2>/dev/null && break; sleep 0.1; done
-    out=$(PATH="$REAL_PATH" bash "$P")
+    out=$(unset DOT_PORTS_OS DOT_PORTS_PROC; PATH="$REAL_PATH" bash "$P")   # the real machine, not the stand-ins
     check "real lsof/ss: python on :$port in realproj" 'printf "%s\n" "$out" | grep "^$port " | grep -q "realproj"'
     kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
 else

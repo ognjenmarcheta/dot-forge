@@ -77,12 +77,14 @@ else
 fi
 
 hashv() { # var text — the hash WezTerm's features.lua uses for project colours
-    local h=0 i c
-    for (( i = 0; i < ${#2}; i++ )); do
-        printf -v c '%d' "'${2:$i:1}"
-        h=$(( (h * 31 + c) % 2147483647 ))
+    # (locals start with _hv: a local named like the caller's variable would
+    # catch the printf -v below)
+    local _hv_h=0 _hv_i _hv_c
+    for (( _hv_i = 0; _hv_i < ${#2}; _hv_i++ )); do
+        printf -v _hv_c '%d' "'${2:$_hv_i:1}"
+        _hv_h=$(( (_hv_h * 31 + _hv_c) % 2147483647 ))
     done
-    printf -v "$1" '%d' "$h"
+    printf -v "$1" '%d' "$_hv_h"
 }
 
 project_colorv() { # var name — machine.lua project_colors, else the WezTerm palette

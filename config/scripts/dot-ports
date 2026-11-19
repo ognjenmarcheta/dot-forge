@@ -167,7 +167,7 @@ kill_port() {
     return 1
 }
 
-opener() { if [ "$OS" = Darwin ]; then open "$1"; else xdg-open "$1" >/dev/null 2>&1 & fi; }
+opener() { if [ "$OS" = Darwin ]; then open "$1"; else xdg-open "$1" >/dev/null 2>&1; fi; }   # xdg-open returns at once
 
 open_port() {
     local port="${1:-}" n url

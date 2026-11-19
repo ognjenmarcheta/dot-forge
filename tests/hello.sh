@@ -31,7 +31,7 @@ chmod +x "$FB/notify-send" "$FB/terminal-notifier"
 
 echo "logo"
 check "byteforge.logo is what make-logo.py draws" 'python3 "$DOT/config/hello/make-logo.py" | cmp -s - "$DOT/config/hello/byteforge.logo"'
-check "every logo line is the same width" '[ "$(sed "s/{[a-z0-9]*}//g" "$DOT/config/hello/byteforge.logo" | while IFS= read -r l; do echo "${#l}"; done | sort -u | wc -l | tr -d " ")" = 1 ]'
+check "every logo line is the same width" 'python3 -c "import re,sys; w={len(re.sub(r\"\\{[a-z0-9]+\\}\",\"\",l.rstrip(\"\\n\"))) for l in open(sys.argv[1], encoding=\"utf-8\")}; sys.exit(len(w) != 1)" "$DOT/config/hello/byteforge.logo"'
 
 echo "the card"
 out=$(hello show)
