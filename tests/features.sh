@@ -249,6 +249,44 @@ check "the report never lands in the PR" '! grep -q "abc123secret\|pnpm test --f
 unset DOT_EVOLVE_FROM DOT_EVOLVE_NO_DOCTOR DOTFILES_DIR
 export DOT_EVOLVE=0
 
+echo "dot upgrade"
+U="$T/upg"
+git init -q --bare "$U/origin.git"
+git clone -q "$U/origin.git" "$U/dots" 2>/dev/null
+printf '#!/usr/bin/env bash\necho "install $*" >> "%s"\n' "$U/install.log" > "$U/dots/install.sh"
+chmod +x "$U/dots/install.sh"
+echo "alias a=1" > "$U/dots/habits.sh"
+git -C "$U/dots" add -A && git -C "$U/dots" commit -qm "chore: init" && git -C "$U/dots" push -q origin main
+git clone -q "$U/origin.git" "$U/other" 2>/dev/null
+echo "new" > "$U/other/NEW" && git -C "$U/other" add NEW && git -C "$U/other" commit -qm "feat: new" && git -C "$U/other" push -q origin main
+echo "alias b=2" >> "$U/dots/habits.sh"   # a local edit, like dot habits makes
+out=$(DOTFILES_DIR="$U/dots" bash "$S/dot" upgrade 2>&1); rc=$?
+check "local edits don't block the pull" '[ "$rc" = 0 ] && [ -f "$U/dots/NEW" ] && grep -q "alias b=2" "$U/dots/habits.sh"'
+check "tools upgraded" 'grep -q "install --upgrade" "$U/install.log"'
+git -C "$U/dots" commit -qam "chore: local"
+echo "more" > "$U/other/MORE" && git -C "$U/other" add MORE && git -C "$U/other" commit -qm "feat: more" && git -C "$U/other" push -q origin main
+: > "$U/install.log"
+out=$(DOTFILES_DIR="$U/dots" bash "$S/dot" upgrade 2>&1); rc=$?
+check "diverged: says how to fix, still upgrades the tools" '[ "$rc" = 1 ] && [[ "$out" == *"NOT pulled"*"pull --rebase"* ]] && grep -q "install --upgrade" "$U/install.log"'
+git -C "$U/dots" switch -q -c scratch
+out=$(DOTFILES_DIR="$U/dots" bash "$S/dot" upgrade 2>&1); rc=$?
+check "branch without upstream: says so" '[ "$rc" = 1 ] && [[ "$out" == *"no upstream"* ]]'
+
+echo "z typos"
+if command -v zoxide >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; then
+    mkdir -p "$T/Github/web-shop/apps" "$T/Github/billing"
+    for sh in bash zsh; do
+        command -v "$sh" >/dev/null 2>&1 || continue
+        out=$(cd / && _ZO_DATA_DIR="$T/zo-$sh" "$sh" -c '. "$1"; zoxide add "$2" "$2/apps" "$3"; z web-shp 2>&1; pwd; z nothing-like-it 2>&1; echo "rc=$?"' _ \
+            "$DOT/config/shell/aliases.sh" "$T/Github/web-shop" "$T/Github/billing" 2>&1)
+        nl=$'\n'
+        check "$sh: a typo jumps to the closest folder" '[[ "$out" == *"going to $T/Github/web-shop"* && "$out" == *"${nl}$T/Github/web-shop${nl}"* ]]'
+        check "$sh: no match is still an error" '[[ "$out" == *"rc=1"* ]]'
+    done
+else
+    echo "  - zoxide or fzf not installed: skipped"
+fi
+
 echo "dot try"
 cat > "$FB/docker" <<'EOF'
 #!/usr/bin/env bash

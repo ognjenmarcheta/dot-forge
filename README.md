@@ -8,7 +8,9 @@ Every AI feature runs through `config/scripts/dot-ai`: Claude Code on **your
 Claude subscription login only** — API-key variables are removed and it refuses
 to run if Claude Code reports any other login (`dot-ai --check`).
 
-Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned),
+Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned;
+uncommitted edits are kept, and if the pull can't happen it says why and
+upgrades the tools anyway),
 `dot save "msg"` (commit + push your config edits), `dot doctor`, `dot keys`.
 
 ## New machine
@@ -175,7 +177,8 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   names and paths stay out of the code and the PR. `DOT_EVOLVE=0` turns it off.
 - **Prompt**: Starship with clickable user / path segments / git branch; `↑` = `cd ..`.
 - **Shell**: `ls`/`ll` via eza (icons, git status, clickable), `cat`/`man` via bat,
-  `z` + Tab menu of frequent folders, Ctrl+R = atuin history, Ctrl+T / Alt+C =
+  `z` + Tab menu of frequent folders (a name with a missing letter still
+  finds the closest one), Ctrl+R = atuin history, Ctrl+T / Alt+C =
   fzf file / folder, `rgf <text>` = search and open the hit in nvim, `y` = yazi.
 - **`ai`**: `ai <request>` → a shell command from Claude Code (asks before
   running), `ai explain <cmd>`, `ai fix` (after a command failed — in WezTerm

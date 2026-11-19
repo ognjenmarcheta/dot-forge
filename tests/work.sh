@@ -5,7 +5,7 @@
 set -uo pipefail
 DOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 S="$DOT/config/scripts"
-T="$(mktemp -d)"
+T="$(cd "$(mktemp -d)" && pwd -P)"   # physical path (macOS: /var → /private/var)
 FB="$T/fakebin"
 mkdir -p "$FB"
 export HOME="$T" XDG_CONFIG_HOME="$T/.config" XDG_DATA_HOME="$T/.local/share" XDG_CACHE_HOME="$T/.cache"
