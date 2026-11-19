@@ -7,17 +7,70 @@ end
 
 config = {
     default_cursor_style = "BlinkingBlock",
+    -- the cursor fades in and out instead of switching on and off
+    cursor_blink_rate = 700,
+    cursor_blink_ease_in = "EaseOut",
+    cursor_blink_ease_out = "EaseOut",
+    animation_fps = 60,
+    -- splits you're not typing in fade back; the active one stays bright
+    inactive_pane_hsb = { saturation = 0.8, brightness = 0.55 },
     automatically_reload_config = true,
     window_close_confirmation = "NeverPrompt",
     adjust_window_size_when_changing_font_size = false,
-    window_decorations = "RESIZE", -- Linux override further down
+    window_decorations = "RESIZE",
     tab_bar_at_bottom = true,
     tab_and_split_indices_are_zero_based = true,
     hide_tab_bar_if_only_one_tab = false,
     check_for_updates = false,
-    use_fancy_tab_bar = false,
+    -- the "fancy" tab bar: the only one where tabs get a clickable × close button.
+    -- With persistent sessions, × always asks "Really kill this tab?" (hard-coded
+    -- in WezTerm for session-server tabs); Cmd+W / Ctrl+Shift+W close at once.
+    use_fancy_tab_bar = true,
+    show_close_tab_button_in_tabs = true,
+    window_frame = {
+        font = wezterm.font("JetBrains Mono", { weight = "Bold" }),
+        font_size = 11.5,
+        active_titlebar_bg = "#1f2330",
+        inactive_titlebar_bg = "#1f2330",
+    },
     font_size = 12.5,
-    font = wezterm.font("JetBrains Mono", { weight = "Bold" }),
+    -- Medium for normal text, so bold actually stands out; italics in a
+    -- cursive face (comments in nvim, *emphasis* in Markdown). Victor Mono is
+    -- installed by install.sh / the Brewfile; without it italics stay JetBrains.
+    font = wezterm.font_with_fallback({
+        { family = "JetBrains Mono", weight = "Medium" },
+        { family = "JetBrainsMono Nerd Font", weight = "Medium" },
+    }),
+    font_rules = {
+        { intensity = "Bold", italic = false, font = wezterm.font("JetBrains Mono", { weight = "ExtraBold" }) },
+        { intensity = "Half", italic = false, font = wezterm.font("JetBrains Mono", { weight = "Light" }) },
+        {
+            intensity = "Bold", italic = true,
+            font = wezterm.font_with_fallback({
+                { family = "VictorMono Nerd Font", weight = "Bold", style = "Italic" },
+                { family = "Victor Mono", weight = "Bold", style = "Italic" },
+                { family = "JetBrains Mono", weight = "ExtraBold", style = "Italic" },
+            }),
+        },
+        {
+            intensity = "Normal", italic = true,
+            font = wezterm.font_with_fallback({
+                { family = "VictorMono Nerd Font", weight = "DemiBold", style = "Italic" },
+                { family = "Victor Mono", weight = "DemiBold", style = "Italic" },
+                { family = "JetBrains Mono", weight = "Medium", style = "Italic" },
+            }),
+        },
+        {
+            intensity = "Half", italic = true,
+            font = wezterm.font_with_fallback({
+                { family = "VictorMono Nerd Font", weight = "Regular", style = "Italic" },
+                { family = "Victor Mono", weight = "Regular", style = "Italic" },
+                { family = "JetBrains Mono", weight = "Light", style = "Italic" },
+            }),
+        },
+    },
+    -- ligatures (=> != === ->) and a slashed zero
+    harfbuzz_features = { "calt=1", "clig=1", "liga=1", "zero" },
     enable_tab_bar = true,
     tab_max_width = 28,
     window_padding = {
@@ -95,6 +148,7 @@ config = {
     colors = {
         tab_bar = {
             background = "#1f2330",
+            inactive_tab_edge = "#1f2330",
             active_tab = {
                 bg_color = "#b7bdf8",
                 fg_color = "#1e2030",
@@ -121,18 +175,9 @@ config = {
     },
 }
 
--- Linux (GNOME Wayland): turn the tab bar into a title bar.
--- It sits at the top, shows the window title + min/max/close buttons, and
--- click-and-hold on any empty part of it drags the window. Double-click
--- maximizes. macOS keeps the original borderless/bottom-tab-bar layout.
+-- Same window on macOS and Linux: borderless, tab bar at the bottom.
+-- On GNOME, move the window with Super+drag, maximize with Super+Up.
 if not wezterm.target_triple:find("darwin") then
-    config.window_decorations = "INTEGRATED_BUTTONS|RESIZE"
-    config.integrated_title_button_style = "Gnome"
-    config.integrated_title_buttons = { "Hide", "Maximize", "Close" }
-    config.integrated_title_button_alignment = "Right"
-    config.tab_bar_at_bottom = false
-    config.colors.tab_bar.background = "#1f2330"
-
     -- Start the shell with ~/.config/shell setup (starship clickable prompt,
     -- clickable ls/ll, zoxide `z`). Your own ~/.bashrc / ~/.zshrc still load first.
     local home = wezterm.home_dir

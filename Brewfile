@@ -6,6 +6,7 @@ tap "nikitabobko/tap"
 # terminal + shell
 cask "wezterm" unless ENV["CI"]
 cask "font-jetbrains-mono-nerd-font" unless ENV["CI"]   # icons in other terminals / editors (WezTerm has its own)
+cask "font-victor-mono-nerd-font" unless ENV["CI"]      # cursive italics in WezTerm
 brew "starship"
 brew "zoxide"
 brew "fzf"
