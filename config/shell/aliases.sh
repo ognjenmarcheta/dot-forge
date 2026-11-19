@@ -146,6 +146,9 @@ if [ -n "$ZSH_VERSION" ]; then
     bindkey -e                                   # Emacs keys, like bash
     bindkey '^[[1;5C' forward-word               # Ctrl+→
     bindkey '^[[1;5D' backward-word              # Ctrl+←
+    bindkey '^[[1;3C' forward-word               # Alt+→ (Option on a Mac)
+    bindkey '^[[1;3D' backward-word              # Alt+←
+    bindkey '^[^M' self-insert-unmeta            # Shift+Enter (WezTerm sends Esc Enter): new line
     bindkey '^[[H' beginning-of-line             # Home
     bindkey '^[[F' end-of-line                   # End
     bindkey '^[[3~' delete-char                  # Delete
@@ -169,6 +172,12 @@ if [ -n "$ZSH_VERSION" ]; then
         ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
         . "$_dot_zp/zsh-autosuggestions/zsh-autosuggestions.zsh"
     fi
+fi
+if [ -n "$BASH_VERSION" ] && [[ $- == *i* ]]; then
+    bind '"\e[1;3C": forward-word' 2>/dev/null    # Alt+→ (Option on a Mac)
+    bind '"\e[1;3D": backward-word' 2>/dev/null   # Alt+←
+    bind '"\e[1;5C": forward-word' 2>/dev/null    # Ctrl+→
+    bind '"\e[1;5D": backward-word' 2>/dev/null   # Ctrl+←
 fi
 
 # --- bash: preexec/precmd hooks (needed by atuin and command notifications) ---
