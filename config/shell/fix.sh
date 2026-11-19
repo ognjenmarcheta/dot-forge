@@ -76,11 +76,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     zle -N _dot_fix_ready
 
     _dot_fix_accept() {
-        if [[ -z "$_dot_fix_suggestion" ]]; then
-            # no suggestion: Ctrl+G keeps its usual job (abort the line)
-            [[ "$KEYS" == $'\C-g' ]] && zle send-break
-            return 0
-        fi
+        [[ -n "$_dot_fix_suggestion" ]] || return 0
         BUFFER="$_dot_fix_suggestion"
         CURSOR=${#BUFFER}
         _dot_fix_suggestion=""
@@ -89,7 +85,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     zle -N _dot_fix_accept
     bindkey '^[OP' _dot_fix_accept    # F1
     bindkey '^[[11~' _dot_fix_accept  # F1 (some terminals)
-    bindkey '^G' _dot_fix_accept      # Ctrl+G: no Fn needed
+    # Ctrl+G: bound in aliases.sh (shared with ai and navi)
 
     autoload -Uz add-zsh-hook
     add-zsh-hook preexec _dot_fix_preexec
@@ -119,5 +115,4 @@ elif [ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]; then
     precmd_functions=(_dot_fix_precmd "${precmd_functions[@]}")
     bind -x '"\eOP": _dot_fix_accept_bash' 2>/dev/null
     bind -x '"\e[11~": _dot_fix_accept_bash' 2>/dev/null
-    bind -x '"\C-g": _dot_fix_accept_bash' 2>/dev/null
 fi

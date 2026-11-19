@@ -154,7 +154,7 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   done, for how long, what about) and jumps there; Leader ? opens Claude in a
   side pane already told about the folder, git state and the last output.
 - **Self-healing typos**: after a failed command with an obvious mistake, a 💡
-  fix shows under the zsh prompt; Ctrl+G (or F1) puts it on the command line (never runs
+  fix shows under the zsh prompt; Ctrl+G on the empty line (or F1) puts it on the command line (never runs
   it). `DOT_FIX=0` turns it off.
 - **Push-to-talk**: Alt+V, speak, any key → `ai "…"` on the command line.
   Speech-to-text is whisper.cpp on this machine; no audio leaves it.
@@ -241,8 +241,10 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   fzf file / folder, `rgf <text>` = search and open the hit in nvim, `y` = yazi.
 - **`ai`**: `ai <request>` → a shell command from Claude Code (asks before
   running), `ai explain <cmd>`, `ai fix` (after a command failed — in WezTerm
-  it also sends Claude the error that's on screen).
-- **More tools**: `tldr`, navi (Ctrl+G, cheats in `config/navi/cheats` — adb,
+  it also sends Claude the error that's on screen). Or type the request on
+  the prompt line and press **Ctrl+G**: the line turns into the command
+  (nothing runs until Enter; Ctrl+_ undoes).
+- **More tools**: `tldr`, navi (Ctrl+G on an empty line, cheats in `config/navi/cheats` — adb,
   docker, kubectl, git, system), carapace completions, `just`, `fx`, `xh`.
 - **git**: delta diffs (also in lazygit), zdiff3 conflicts, rerere, `git lg`,
   `git recent`, `git undo`.

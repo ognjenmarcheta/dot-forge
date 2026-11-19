@@ -77,10 +77,48 @@ Examples:
   ai explain find . -name '*.log' -mtime +7 -delete
   ai fix                      (right after a command failed)
 
+Or type the request on the prompt line and press Ctrl+G: the line becomes
+the command (nothing runs until you press Enter).
+
 After the suggestion:  Enter = run   e = edit   c = copy   n = cancel
 Model: AI_MODEL=haiku|sonnet|opus (default: sonnet)
 EOF
 }
+
+# Plain English on the prompt line → Ctrl+G → the line becomes the command.
+# Nothing runs: read it, edit it, press Enter. Ctrl+_ (undo) brings your words
+# back. A leading "# " is fine (so a stray Enter doesn't run the sentence).
+# Quickest model, your subscription (dot-ai). Ctrl+G is bound in aliases.sh
+# (shared with the 💡 typo fix and navi).
+_ai_line_to_cmd() { # request → "# " notes and the command, or nothing
+    printf 'Context:\n%s\n\nRequest: %s\n' "$(_ai_context)" "$1" |
+        "$HOME/.config/scripts/dot-ai" --fast --system "$_ai_system_prompt" 2>/dev/null |
+        sed -e '/^```/d' -e '/^[[:space:]]*$/d'
+}
+_ai_line_request() { # strip a leading "#" and blanks
+    local r="$1"
+    r="${r#"${r%%[![:space:]#]*}"}"
+    printf '%s' "$r"
+}
+if [ -n "$ZSH_VERSION" ] && [[ -o zle ]]; then
+    _ai_inline() {
+        local request reply cmd warn
+        request="$(_ai_line_request "$BUFFER")"
+        [[ -n "${request//[[:space:]]/}" ]] || return 0
+        zle -M "… asking Claude: $request"; zle -R
+        reply="$(_ai_line_to_cmd "$request")"
+        cmd="$(printf '%s\n' "$reply" | grep -v '^#')"
+        if [[ -z "$cmd" ]]; then
+            zle -M "${reply:-ai: no answer (run \`claude\` once and log in)}"
+            return 0
+        fi
+        warn="$(printf '%s\n' "$reply" | grep '^# WARNING' | head -n 1)"
+        BUFFER="$cmd"
+        CURSOR=${#BUFFER}
+        zle -M "${warn:+⚠  $warn}"
+    }
+    zle -N _ai_inline
+fi
 
 # What the terminal shows right now (the failed command and its output), asked
 # from WezTerm: the shell sets a user var, WezTerm writes the visible text to

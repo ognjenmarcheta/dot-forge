@@ -243,7 +243,7 @@ if _dot_has carapace; then
     fi
 fi
 
-# --- navi: Ctrl+G = saved commands with blanks to fill in (~/.config/navi) ----
+# --- navi: saved commands with blanks to fill in (~/.config/navi) -----------
 if _dot_has navi; then
     export NAVI_CONFIG="$HOME/.config/navi/config.yaml"
     export NAVI_PATH="${NAVI_PATH:-$HOME/.config/navi/cheats}"
@@ -252,6 +252,44 @@ if _dot_has navi; then
     elif [ -n "$BASH_VERSION" ]; then
         eval "$(navi widget bash)"
     fi
+fi
+
+# --- Ctrl+G: one key, three jobs (after navi, which binds Ctrl+G itself) -----
+#   text on the line      plain English → the command (ai.sh; nothing runs)
+#   empty, 💡 fix shown   take the fix (fix.sh; F1 too)
+#   empty                 navi
+# Ctrl+G, not an F-key: F-keys need Fn on a MacBook and 60% keyboards have none.
+if [ -n "$ZSH_VERSION" ] && [[ -o zle ]]; then
+    _dot_ctrl_g() {
+        if [[ -n "${BUFFER//[[:space:]]/}" ]] && (( $+widgets[_ai_inline] )); then
+            zle _ai_inline
+        elif [[ -n "${_dot_fix_suggestion:-}" ]] && (( $+widgets[_dot_fix_accept] )); then
+            zle _dot_fix_accept
+        elif (( $+widgets[_navi_widget] )); then
+            zle _navi_widget
+        else
+            zle send-break
+        fi
+    }
+    zle -N _dot_ctrl_g
+    bindkey '^G' _dot_ctrl_g
+elif [ -n "$BASH_VERSION" ] && [[ $- == *i* ]]; then
+    _dot_ctrl_g_bash() {
+        if [ -n "${READLINE_LINE//[[:space:]]/}" ] && declare -F _ai_line_to_cmd >/dev/null; then
+            local reply cmd
+            printf '\033[2m… asking Claude\033[0m\r' >/dev/tty
+            reply="$(_ai_line_to_cmd "$(_ai_line_request "$READLINE_LINE")")"
+            printf '\033[2K' >/dev/tty
+            cmd="$(printf '%s\n' "$reply" | grep -v '^#')"
+            if [ -n "$cmd" ]; then READLINE_LINE="$cmd"; READLINE_POINT=${#cmd}
+            else printf '%s\n' "${reply:-ai: no answer}" >/dev/tty; fi
+        elif [ -n "${_dot_fix_failed:-}" ] && declare -F _dot_fix_accept_bash >/dev/null; then
+            _dot_fix_accept_bash
+        elif declare -F _navi_widget >/dev/null; then
+            _navi_widget
+        fi
+    }
+    bind -x '"\C-g": _dot_ctrl_g_bash' 2>/dev/null
 fi
 
 # --- Daily Node/pnpm update notice (cached, never blocks startup) -----------
