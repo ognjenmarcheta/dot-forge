@@ -1,3 +1,14 @@
+<p align="center">
+  <img src="media/project-banner.png" width="800" alt="dotfiles — one terminal setup for every machine and every agent" />
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <img alt="macOS and Linux" src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-6fcf73">
+  <img alt="WezTerm, Neovim, Starship" src="https://img.shields.io/badge/WezTerm%20%C2%B7%20Neovim%20%C2%B7%20Starship-5b8de0">
+  <a href="config/scripts/dot-ai"><img alt="AI: Claude Code" src="https://img.shields.io/badge/AI-Claude%20Code-8A2BE2"></a>
+</p>
+
 # dotfiles
 
 Terminal setup for macOS and Linux (Ubuntu): WezTerm, Starship prompt, Neovim
