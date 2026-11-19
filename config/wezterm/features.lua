@@ -373,12 +373,25 @@ local function is_night()
 end
 
 -- Cursor colour = what state you're in (the active pane decides):
---   orange  Alt+q leader is waiting for the next key
 --   red     the last command failed (until you run the next one)
 --   purple  Claude Code is working in this pane
 --   green   otherwise
 wezterm.GLOBAL.failed = wezterm.GLOBAL.failed or {}
+-- Alt+q opens the "leader" key table (see M.apply_leader); the old LEADER
+-- modifier counts too, in case a machine still sets config.leader.
+-- wezterm.GLOBAL.leader[window id] = when the hints go away (ms). Set by
+-- Alt+q itself, so the hints don't wait for the key table to show up.
+wezterm.GLOBAL.leader = wezterm.GLOBAL.leader or {}
+local function now_ms() return os.time() * 1000 end
+function M.leader_on(window)
+    local until_ms = wezterm.GLOBAL.leader[tostring(window:window_id())]
+    if until_ms and until_ms > now_ms() then return true end
+    return window:active_key_table() == "leader" or window:leader_is_active()
+end
+
 local function cursor_color(window, pane)
+    -- (not for the Alt+q leader: changing the config overrides reloads the
+    -- window's config, which drops the active key table — the hints show it)
     if window:leader_is_active() then return "#f5a97f" end
     local id = tostring(pane:pane_id())
     if wezterm.GLOBAL.failed[id] then return "#ed8796" end
@@ -471,9 +484,7 @@ function M.project_status(window, pane)
         table.insert(out, { Text = text .. "   " })
         table.insert(out, "ResetAttributes")
     end
-    if window:leader_is_active() then
-        add("#f5a97f", wezterm.nerdfonts.md_keyboard .. " leader")
-    end
+    if M.leader_on(window) then return M.leader_hints() end
     if share then
         add("#ed8796", "● SHARING · " .. (share.label or ""))
     end
@@ -1189,6 +1200,92 @@ function M.apply(config)
         mods = "NONE",
         action = act.SelectTextAtMouseCursor("SemanticZone"),
     })
+end
+
+
+-- ------------------------------------------------------------ leader -----
+-- Alt+q, then a key. Instead of WezTerm's LEADER modifier (no feedback until
+-- the next status update, up to a second late, and gone after 2 s) Alt+q
+-- opens a one-shot key table: the tab bar shows at once which keys do what,
+-- and it waits 4 s. Esc cancels; Alt+q twice sends
+-- Alt+q to the program. Bindings are still written as mods = "LEADER" in
+-- config.lua / here: apply_leader moves them into the table.
+local LEADER_MS = 4000
+local leader_hint_keys = {
+    { "c", "tab" }, { "x", "close" }, { "| -", "split" }, { "hjkl", "pane" },
+    { "1-9", "tab" }, { "p", "projects" }, { "a", "agents" }, { "?", "ask Claude" },
+    { "y", "copy output" }, { "Space", "select" }, { "u", "URL" }, { "w", "workspace" },
+    { "Esc", "cancel" },
+}
+
+function M.leader_hints()
+    local out = {
+        { Background = { Color = "#f5a97f" } }, { Foreground = { Color = "#1e2030" } },
+        { Attribute = { Intensity = "Bold" } },
+        { Text = " " .. wezterm.nerdfonts.md_keyboard .. " Alt+q " }, "ResetAttributes",
+        { Text = "  " },
+    }
+    for _, h in ipairs(leader_hint_keys) do
+        table.insert(out, { Foreground = { Color = "#f5a97f" } })
+        table.insert(out, { Attribute = { Intensity = "Bold" } })
+        table.insert(out, { Text = h[1] })
+        table.insert(out, "ResetAttributes")
+        table.insert(out, { Foreground = { Color = "#a5adcb" } })
+        table.insert(out, { Text = " " .. h[2] .. "   " })
+    end
+    return out
+end
+
+local function refresh_status(window)
+    local pane = window:active_pane()
+    if not pane then return end
+    window:set_left_status(wezterm.format(M.project_status(window, pane)))
+end
+
+-- after the action ran and the one-shot table popped
+local function leader_off(window)
+    wezterm.GLOBAL.leader[tostring(window:window_id())] = nil
+    wezterm.time.call_after(0.05, function() refresh_status(window) end)
+end
+wezterm.on("dot-leader-done", function(window, _) leader_off(window) end)
+wezterm.on("dot-leader-on", function(window, _)
+    wezterm.GLOBAL.leader[tostring(window:window_id())] = now_ms() + LEADER_MS
+    refresh_status(window)
+    -- timed out without a key: put the normal status back
+    wezterm.time.call_after(LEADER_MS / 1000 + 0.2, function()
+        if window:active_key_table() ~= "leader" then leader_off(window) end
+    end)
+end)
+
+function M.apply_leader(config)
+    local trigger = config.leader or { key = "q", mods = "ALT" }
+    config.leader = nil
+    local tbl = {}
+    local keep = {}
+    for _, k in ipairs(config.keys or {}) do
+        local mods = k.mods or ""
+        if mods:find("LEADER") then
+            mods = mods:gsub("LEADER", ""):gsub("^|", ""):gsub("|$", ""):gsub("||", "|")
+            table.insert(tbl, {
+                key = k.key, mods = mods == "" and "NONE" or mods,
+                action = act.Multiple { k.action, act.EmitEvent "dot-leader-done" },
+            })
+        else
+            table.insert(keep, k)
+        end
+    end
+    table.insert(tbl, { key = "Escape", mods = "NONE", action = act.Multiple { act.PopKeyTable, act.EmitEvent "dot-leader-done" } })
+    table.insert(tbl, { key = trigger.key, mods = trigger.mods, action = act.Multiple {
+        act.SendKey { key = trigger.key, mods = trigger.mods }, act.EmitEvent "dot-leader-done" } })
+    config.key_tables = config.key_tables or {}
+    config.key_tables.leader = tbl
+    -- ActivateKeyTable has to run as a plain action: from an action_callback
+    -- (window:perform_action) WezTerm silently doesn't push the table
+    table.insert(keep, { key = trigger.key, mods = trigger.mods, action = act.Multiple {
+        act.ActivateKeyTable { name = "leader", one_shot = true, timeout_milliseconds = LEADER_MS },
+        act.EmitEvent "dot-leader-on",
+    } })
+    config.keys = keep
 end
 
 return M

@@ -25,12 +25,21 @@ need() { # label, regex that must appear in the key table
         printf '%s\n' "$keys" | grep -iE "${3:-LEADER}" | head -8 | sed 's/^/    /'
     fi
 }
-need "Leader p (projects)"   "key = 'p', mods = 'LEADER'"
-need "Leader y (copy output)" "key = 'y', mods = 'LEADER'"
-need "Leader Space (quick select)" "key = '(phys:)?Space', mods = 'LEADER', action = act.QuickSelect" "space"
+# Alt+q opens the "leader" key table (features.apply_leader)
+need "Alt+q opens the leader table" "key = 'q', mods = 'ALT', action = act.Multiple\\{ \\{ ActivateKeyTable" "'q'"
+need "Leader p (projects)"   "key = 'p', mods = 'NONE', action = act.Multiple\\{ \\{ EmitEvent" "leader|'p'"
+need "Leader y (copy output)" "key = 'y', mods = 'NONE', action = act.Multiple" "leader|'y'"
+need "Leader c (new tab)" "key = 'c', mods = 'NONE', action = act.Multiple\\{ \\{ SpawnTab" "leader|'c'"
+need "Leader Space (quick select)" "key = '(phys:)?Space', mods = 'NONE', action = act.Multiple\\{ 'QuickSelect'" "space"
+need "Leader Esc (cancel)" "key = 'Escape', mods = 'NONE', action = act.Multiple\\{ 'PopKeyTable'" "escape"
 need "Shift+Up (prev command)" "key = 'UpArrow', mods = 'SHIFT'"
 need "Ctrl+h (pane/split nav)" "key = 'h', mods = 'CTRL'"
-need "Leader w (workspaces)" "key = 'w', mods = 'LEADER'"
+need "Leader w (workspaces)" "key = 'w', mods = 'NONE', action = act.Multiple\\{ \\{ ShowLauncherArgs" "'w'"
+if printf '%s' "$keys" | grep -q "mods = '[A-Z|]*LEADER"; then
+    echo "✗ a LEADER binding was left outside the leader table"; fails=1
+else
+    echo "✓ every leader binding is in the leader table"
+fi
 if printf '%s' "$keys" | grep -q 'Close.*confirm = true'; then
     echo "✗ closing a tab / pane asks for confirmation"; fails=1
 else

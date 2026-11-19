@@ -104,12 +104,14 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   files (comma-separated). Recurring meetings work; all-day, cancelled and
   declined ones are skipped. `dot-calendar --check` shows what it found.
 
-- **WezTerm**: Alt+q leader (tmux-style tabs/splits), clickable links, the
+- **WezTerm**: Alt+q leader (tmux-style tabs/splits): the tab bar lists what
+  each next key does, it waits 4 s, Esc cancels and Alt+q twice sends Alt+q to
+  the program. Clickable links, the
   same borderless window with the tab bar at the bottom on macOS and Linux,
   rounded tabs with an icon for what runs in them, cursive Victor Mono italics,
   dimmed inactive splits, a thin frame in the project's colour, frosted glass
   (macOS/KDE; `glass = true` in machine.lua elsewhere), and a cursor whose
-  colour says the state (orange leader, red last command failed, purple
+  colour says the state (red last command failed, purple
   Claude working, green otherwise),
   Ctrl+click links inside nvim/lazygit. Ctrl+h/j/k/l
   moves between WezTerm panes *and* Neovim splits (Alt+h/j/k/l resizes);
