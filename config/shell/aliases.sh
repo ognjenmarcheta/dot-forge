@@ -258,6 +258,29 @@ if _dot_has zoxide; then
     fi
 fi
 
+# --- z forgives typos ----------------------------------------------------------
+# zoxide finds nothing for `z my-projet` → jump to the closest fuzzy match
+# among your folders (fzf's ranking) and say where. Paths and options go
+# straight to zoxide; no fuzzy match → zoxide's own error.
+if _dot_has zoxide && _dot_has fzf && type __zoxide_z >/dev/null 2>&1; then
+    z() {
+        local _a _best
+        for _a in "$@"; do
+            case "$_a" in -*|.|..|/*|./*|../*|'~'*) __zoxide_z "$@"; return ;; esac
+        done
+        if [ $# -eq 0 ] || [ -d "$1" ] || command zoxide query --exclude "$PWD" -- "$@" >/dev/null 2>&1; then
+            __zoxide_z "$@"; return
+        fi
+        _best=$(command zoxide query --list --exclude "$PWD" 2>/dev/null | command fzf --filter="$*" 2>/dev/null | command head -n 1)
+        if [ -n "$_best" ]; then
+            printf 'z: no match for "%s" — going to %s\n' "$*" "$_best" >&2
+            __zoxide_z "$_best"
+        else
+            __zoxide_z "$@"
+        fi
+    }
+fi
+
 # --- z + Tab: pick from your most-used folders --------------------------------
 # `z <Tab>` / `z kai<Tab>` opens a fuzzy menu of zoxide's folders, most used
 # first; Enter jumps there. Paths starting with . / ~ complete normally.

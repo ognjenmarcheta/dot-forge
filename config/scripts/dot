@@ -67,6 +67,7 @@ WezTerm  (leader = Alt+q, then the key)
 
 Shell
   z <name> / z <Tab>  jump to a frequent folder / pick from a menu
+                      (a typo or missing letter → the closest folder)
   y                   yazi file manager (cd's to where you quit)
   → (right arrow)     accept the grey suggestion (zsh); Ctrl+→ takes one word
   Tab                 fuzzy completion menu with previews (zsh, fzf-tab)
