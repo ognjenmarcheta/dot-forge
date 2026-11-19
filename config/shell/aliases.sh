@@ -194,6 +194,9 @@ export GITHUB_USER="${GITHUB_USER:-ognjenmarcheta}"
 # --- Shortcuts you accepted from `dot habits` ----------------------------------
 [ -f "$HOME/.config/shell/habits.sh" ] && . "$HOME/.config/shell/habits.sh"
 
+# --- The ByteForge card at a new shell's first prompt (dot hello) ------------
+[ -f "$HOME/.config/shell/hello.sh" ] && . "$HOME/.config/shell/hello.sh"
+
 # --- Once a day: night shift report, habits hint (dot night / dot habits) -------
 [ -f "$HOME/.config/shell/daily.sh" ] && . "$HOME/.config/shell/daily.sh"
 

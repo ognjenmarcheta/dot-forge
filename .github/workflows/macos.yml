@@ -41,3 +41,8 @@ jobs:
         run: /bin/bash tests/doctor.sh --nvim
       - name: night shift / recall / habits / share mode / dot new (BSD tools, bash 3.2)
         run: /bin/bash tests/features.sh
+      - name: startup card / dot ports / dot wrapped (bash 3.2)
+        run: |
+          /bin/bash tests/hello.sh
+          /bin/bash tests/ports.sh
+          /bin/bash tests/wrapped.sh

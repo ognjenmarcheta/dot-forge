@@ -35,7 +35,8 @@ gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
 
 Then open a new WezTerm window and redo the logins that are deliberately not
 stored here: `claude` (for `ai`), `:Copilot auth` in Neovim, and `atuin login`
-if you use sync.
+if you use sync. The startup card lists whatever is still missing until it's
+done (`dot hello setup`).
 
 On a new machine the installer also asks for your git name and email (saved in
 `~/.config/git/local`, not committed).
@@ -51,7 +52,7 @@ Running it again is safe: anything it replaces goes to `~/.dotfiles-backup/<time
 | `config/<name>`     | `~/.config/<name>` (symlink)              |
 | `macos/<name>`      | `~/.config/<name>` on macOS only          |
 | `config/shell/aliases.sh` | sourced from `~/.bashrc` / `~/.zshrc` |
-| `config/shell/local.sh`   | per-machine extras, sourced last (not committed) |
+| `config/shell/local.sh`   | per-machine extras, sourced last (not committed): `DOT_MACHINE_COLOR`, `DOT_HELLO`, `DOT_CALENDAR_ICS`… |
 | `config/git/local`        | git identity / per-machine git (not committed)   |
 | `config/wezterm/machine.lua` | per-machine WezTerm settings (not committed): `persistent_sessions`, `wayland`, `project_colors`, `night`, `night_hours`, `ci_repo` |
 
@@ -59,7 +60,8 @@ Because configs are symlinks, editing `~/.config/wezterm/config.lua` edits this
 repo — commit and push to keep machines in sync.
 
 Packages: Homebrew (`Brewfile`) on macOS; apt + official GitHub releases into
-`~/.local/bin` on Linux. On both, Neovim is pinned to **0.11.6** (official
+`~/.local/bin` on Linux. Both get JetBrains Mono Nerd Font, so icons work in
+terminals and editors other than WezTerm too. On both, Neovim is pinned to **0.11.6** (official
 release in `~/.local/opt`, linked from `~/.local/bin/nvim`) because the plugin
 versions in `config/nvim/lazy-lock.json` are tested with it — Homebrew's and
 newer distros' Neovim 0.12 break avante and rainbow-delimiters.
@@ -67,6 +69,28 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 ## What you get
 
 `dot keys` prints the full cheat sheet.
+
+- **Startup card**: every new window opens with the ByteForge anvil (drawn in
+  text, not an image) and what's worth knowing: OS, uptime, battery, disk,
+  RAM, Claude agents waiting, night-shift results, the CI runner, commits you
+  haven't pushed. Underneath: your next meeting, setup still missing on this
+  machine, yesterday's credits (first window of the day) and a 💡 tip about a
+  feature you haven't used yet. The anvil takes this machine's colour (pick it
+  with `DOT_MACHINE_COLOR` in `local.sh`, so Mac and Linux box look different
+  over SSH), the project's colour inside a repo, glows like hot metal after
+  22:00, and shows the client's logo in share mode
+  (`~/.config/dotfiles/logos/acme.txt`; other projects and agents stay
+  hidden). The first window of the day strikes the anvil: a few sparks, 0.3 s.
+  Narrow splits get one line, scripts and agents get nothing. It takes about
+  40 ms; slow numbers refresh in the background. `dot hello`, `dot fetch`
+  (with sparks), `DOT_HELLO=0` off, `=compact` always one line.
+- **`dot tip`**: one tip a day about a feature you haven't used — checked
+  against your shell history, so it stops suggesting `dot recall` once you use
+  it. `dot tip next`, `dot tip all` (✓ = used).
+- **Next meeting** on the card: set `DOT_CALENDAR_ICS` in
+  `~/.config/shell/local.sh` to your calendar's secret iCal link(s) or .ics
+  files (comma-separated). Recurring meetings work; all-day, cancelled and
+  declined ones are skipped. `dot-calendar --check` shows what it found.
 
 - **WezTerm**: Alt+q leader (tmux-style tabs/splits), clickable links, title bar
   you can drag on Linux, Ctrl+click links inside nvim/lazygit. Ctrl+h/j/k/l
@@ -167,6 +191,22 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   `target`, `.venv`…) — never tracked files, never a repo something runs in —
   plus Docker images and build cache unused for 30 days (never volumes) and
   unused pnpm / uv cache. Asks first; a weekly hint shows when 5+ GB could go.
+- **`dot ports` / `dot name`**: `dot ports` lists what's listening — port,
+  project and branch (worktrees marked), program, PID, clickable URL;
+  `dot ports kill 5173` asks first, `dot ports open 5173`, `--json`. In a repo
+  with a dev server running, `dot name` gives it `https://<repo>.localhost`
+  with a certificate your browser trusts (Caddy, running in the background;
+  `dot name api 8080`, `dot name rm api`, `dot name` lists). `*.localhost`
+  always means this machine, so there's no DNS or `/etc/hosts` to edit; the
+  first name asks once for your password to trust Caddy's certificates.
+  Names are per machine (`~/.config/dotfiles/names.tsv`, not committed).
+- **`dot wrapped`**: your week as a card — active time (5-minute slots with a
+  command), time per project, top commands, your commits per repo, prompts to
+  Claude and roughly how long agents worked, night-shift tasks, typos fixed,
+  busiest day and longest command. `--since "nov 1"`, `--json`. `dot credits`
+  = today so far (`--yesterday`); Fridays the card reminds you. Read from
+  atuin, git and the hook log on this machine only; in share mode other
+  projects show as •••.
 - **`dot evolve`**: once a week the night shift reads where you struggled —
   commands that kept failing (with the error from recall), "command not
   found", repeated lookups, the same three commands you type every morning,
@@ -196,9 +236,10 @@ home folder, runs `tests/doctor.sh --nvim`, then checks a second run changes
 nothing. It uses the self-hosted runner on the workstation (`kaine-ci-linux`,
 like kaine-forge and ordina-forge) and falls back to GitHub's runners when that
 is down. `macos.yml` does the same on macOS with `/bin/bash` 3.2, only when the
-installer or scripts change (macOS minutes are expensive). `tests/work.sh` and
-`tests/features.sh` test standups, night shift, recall, habits, share mode,
-`dot new`, `dot invite`, `dot try`, `dot janitor` and `dot evolve` with stand-in
+installer or scripts change (macOS minutes are expensive). `tests/work.sh`,
+`tests/features.sh`, `tests/hello.sh`, `tests/ports.sh` and `tests/wrapped.sh` test standups, night shift, recall, habits, share mode,
+`dot new`, `dot invite`, `dot try`, `dot janitor`, `dot evolve`, the startup
+card, `dot tip`, `dot ports` / `dot name` and `dot wrapped` with stand-in
 `claude` / `gh` / `docker`; CI also runs a real `dot invite` (ttyd: secret path
 works, nothing else does) and a real `dot try` (checks from inside the sandbox:
 not root, no capabilities, no Docker socket). `new-project.yml` runs `dot new --local`

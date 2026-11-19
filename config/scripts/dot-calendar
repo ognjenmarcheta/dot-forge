@@ -1,0 +1,159 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["icalendar>=6", "recurring-ical-events>=3"]
+# ///
+"""dot-calendar — your next meeting, for the startup card.
+
+Reads the calendars in $DOT_CALENDAR_ICS (comma-separated: secret iCal/ICS
+links, e.g. Google Calendar's "Secret address in iCal format", or .ics files;
+set it per machine in ~/.config/shell/local.sh) and writes the next meeting
+that starts within 12 hours to ~/.cache/dotfiles/hello/next-meeting as
+START_EPOCH<TAB>HH:MM<TAB>TITLE (empty file: nothing coming up). Recurring
+meetings are expanded; all-day, cancelled and declined events are skipped.
+
+  dot-calendar           refresh the cache (run in the background by the card)
+  dot-calendar --print   📅 14:30 Acme weekly (in 25 min)
+  dot-calendar --check   what each calendar contains in the next 12 h
+
+Never prompts; on a network error it keeps the previous answer.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import os
+import sys
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "dotfiles" / "hello" / "next-meeting"
+WINDOW = dt.timedelta(hours=12)
+
+
+def sources() -> list[str]:
+    return [s.strip() for s in os.environ.get("DOT_CALENDAR_ICS", "").split(",") if s.strip()]
+
+
+def fetch(src: str) -> bytes:
+    if src.startswith(("https://", "http://", "webcal://")):
+        url = "https://" + src[len("webcal://"):] if src.startswith("webcal://") else src
+        req = urllib.request.Request(url, headers={"User-Agent": "dot-calendar"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read()
+    return Path(src).expanduser().read_bytes()
+
+
+def my_addresses() -> set[str]:
+    out = {a.strip().lower() for a in os.environ.get("DOT_CALENDAR_ME", "").split(",") if a.strip()}
+    try:
+        import subprocess
+        e = subprocess.run(["git", "config", "--get", "user.email"], capture_output=True, text=True, timeout=5).stdout.strip()
+        if e:
+            out.add(e.lower())
+    except Exception:
+        pass
+    return out
+
+
+def declined(ev, me: set[str]) -> bool:
+    att = ev.get("ATTENDEE")
+    if att is None:
+        return False
+    for a in att if isinstance(att, list) else [att]:
+        addr = str(a).lower().removeprefix("mailto:")
+        if addr in me and str(a.params.get("PARTSTAT", "")).upper() == "DECLINED":
+            return True
+    return False
+
+
+def upcoming(now: dt.datetime) -> list[tuple[dt.datetime, dt.datetime, str, str]]:
+    import icalendar
+    import recurring_ical_events
+
+    me = my_addresses()
+    events = []
+    for src in sources():
+        cal = icalendar.Calendar.from_ical(fetch(src))
+        for ev in recurring_ical_events.of(cal).between(now - dt.timedelta(hours=1), now + WINDOW):
+            start = ev.get("DTSTART")
+            if start is None:
+                continue
+            s = start.dt
+            if not isinstance(s, dt.datetime):          # all-day
+                continue
+            e = ev.get("DTEND").dt if ev.get("DTEND") else s + dt.timedelta(minutes=30)
+            if s.tzinfo is None:
+                s = s.astimezone()
+            if isinstance(e, dt.datetime) and e.tzinfo is None:
+                e = e.astimezone()
+            if str(ev.get("STATUS", "")).upper() == "CANCELLED" or declined(ev, me):
+                continue
+            if str(ev.get("TRANSP", "")).upper() == "TRANSPARENT":   # "show as free"
+                continue
+            if e <= now or s > now + WINDOW:
+                continue
+            title = " ".join(str(ev.get("SUMMARY", "(no title)")).split())
+            events.append((s, e, title, src))
+    events.sort(key=lambda x: x[0])
+    return events
+
+
+def human(line: str, now: dt.datetime) -> str:
+    try:
+        epoch, hhmm, title = line.rstrip("\n").split("\t", 2)
+    except ValueError:
+        return ""
+    mins = int((int(epoch) - now.timestamp()) // 60)
+    if mins > 90:
+        when = f"in {mins // 60}h {mins % 60:02d}m"
+    elif mins > 0:
+        when = f"in {mins} min"
+    else:
+        when = "now"
+    return f"📅 {hhmm} {title} ({when})"
+
+
+def main() -> None:
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    now = dt.datetime.now().astimezone()
+    if arg in ("-h", "--help"):
+        print(__doc__.strip())
+        return
+    if arg == "--print":
+        try:
+            text = human(CACHE.read_text(), now)
+        except OSError:
+            text = ""
+        if text:
+            print(text)
+        return
+    if not sources():
+        if arg == "--check":
+            print("DOT_CALENDAR_ICS isn't set (add it to ~/.config/shell/local.sh)")
+        return
+    try:
+        evs = upcoming(now)
+    except Exception as e:                   # offline, bad URL, broken ICS: keep the old answer
+        if arg == "--check":
+            print(f"dot-calendar: {e}", file=sys.stderr)
+        return
+    if arg == "--check":
+        if not evs:
+            print("nothing in the next 12 h")
+        for s, e, title, src in evs:
+            short = src if not src.startswith("http") else src.split("/")[2] + "/…"
+            print(f"{s.astimezone():%a %H:%M}–{e.astimezone():%H:%M}  {title}  ({short})")
+        return
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CACHE.with_suffix(".tmp")
+    if evs:
+        s, _, title, _ = evs[0]
+        tmp.write_text(f"{int(s.timestamp())}\t{s.astimezone():%H:%M}\t{title[:80]}\n")
+    else:
+        tmp.write_text("")
+    tmp.replace(CACHE)
+
+
+if __name__ == "__main__":
+    main()

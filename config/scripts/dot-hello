@@ -1,0 +1,614 @@
+#!/usr/bin/env bash
+# dot hello — the ByteForge card at the top of every new terminal window.
+#
+#   dot hello              show the card now
+#   dot fetch              the same, with the sparks (for screenshots / demos)
+#   dot hello setup        what's left to set up on this machine (logins, font…)
+#   dot hello setup --dismiss   stop showing the setup line on the card
+#   dot hello --refresh    update the slow numbers now (normally automatic)
+#
+# A new shell shows it at its first prompt (~/.config/shell/hello.sh): the anvil
+# on the left — in this machine's colour, the project's colour inside a repo,
+# glowing like hot metal at night (WezTerm's night_hours), the client's logo in
+# share mode — and on the right what's worth knowing: OS, uptime, battery,
+# disk, memory, Claude agents waiting, night-shift results, CI runner, commits
+# you haven't pushed. Underneath: next meeting, setup still to do, yesterday's
+# credits (first window of the day), and a tip about a feature you haven't used.
+# The first window of the day strikes the anvil (a few sparks, ~0.3 s; never
+# over SSH or in share mode). Narrow panes get one line instead.
+#
+# Settings (environment — e.g. in ~/.config/shell/local.sh):
+#   DOT_HELLO=0 | compact | full   off / always one line / always the card
+#   DOT_HELLO_SPARKS=0             no sparks
+#   DOT_MACHINE_COLOR="#7fc8b8"    this machine's colour (default: from its name)
+#   DOT_CALENDAR_ICS=url[,url]     next meeting on the card (see dot-calendar)
+# A client's own logo for share mode: ~/.config/dotfiles/logos/<client>.logo
+# (plain text, or the {fN} format of config/hello/byteforge.logo).
+#
+# It runs in every new window, so it's written to start few processes: slow
+# facts are cached for a day, the rest (unpushed commits, tip, credits,
+# calendar) is refreshed in the background every 15 minutes.
+set -uo pipefail
+
+here="$(cd -- "$(dirname -- "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+hello_dir="$here/../hello"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/hello"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles"
+data="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles"
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+projects="${DOT_PROJECTS:-$HOME/Github}"
+OS="${DOT_HELLO_OS:-$(uname -s)}"   # DOT_HELLO_OS: tests only
+TAB="$(printf '\t')"
+
+# ------------------------------------------------------------------ colours ---
+
+color=1
+[ -n "${NO_COLOR:-}" ] && color=0
+[ "${TERM:-}" = dumb ] && color=0
+truecolor=0
+case "${COLORTERM:-}:${TERM_PROGRAM:-}" in
+    *truecolor*|*24bit*|*:WezTerm|*:iTerm.app|*:vscode|*:ghostty) truecolor=1 ;;
+esac
+case "${TERM:-}" in *kitty*|*ghostty*|*wezterm*|*direct*) truecolor=1 ;; esac
+
+# Colours are computed into variables (printf -v), never in $(…): every
+# subshell is a fork, and this runs in every new window.
+_rgb() { local h="${1#\#}"; _r=$(( 16#${h:0:2} )); _g=$(( 16#${h:2:2} )); _b=$(( 16#${h:4:2} )); }
+mixv() { # var hex hex2 percent-of-hex2
+    local r g b
+    _rgb "$2"; r=$_r; g=$_g; b=$_b
+    _rgb "$3"
+    printf -v "$1" '#%02x%02x%02x' $(( r + (_r - r) * $4 / 100 )) $(( g + (_g - g) * $4 / 100 )) $(( b + (_b - b) * $4 / 100 ))
+}
+escv() { # var fg|bg hex — the escape sequence for that colour ("" without colour)
+    if [ "$color" = 0 ]; then printf -v "$1" '%s' ""; return; fi
+    _rgb "$3"
+    local k=38; [ "$2" = bg ] && k=48
+    if [ "$truecolor" = 1 ]; then
+        printf -v "$1" '\033[%d;2;%d;%d;%dm' "$k" "$_r" "$_g" "$_b"
+    else # nearest of the 6×6×6 cube
+        printf -v "$1" '\033[%d;5;%dm' "$k" $(( 16 + 36 * ((_r * 5 + 127) / 255) + 6 * ((_g * 5 + 127) / 255) + (_b * 5 + 127) / 255 ))
+    fi
+}
+if [ "$color" = 1 ]; then
+    R=$'\033[0m'; B=$'\033[1m'; D=$'\033[2m'; RED=$'\033[1;31m'
+else
+    R=""; B=""; D=""; RED=""
+fi
+
+hashv() { # var text — the hash WezTerm's features.lua uses for project colours
+    local h=0 i c
+    for (( i = 0; i < ${#2}; i++ )); do
+        printf -v c '%d' "'${2:$i:1}"
+        h=$(( (h * 31 + c) % 2147483647 ))
+    done
+    printf -v "$1" '%d' "$h"
+}
+
+project_colorv() { # var name — machine.lua project_colors, else the WezTerm palette
+    local custom="" line h
+    if [ -f "$cfg/wezterm/machine.lua" ]; then
+        while IFS= read -r line; do
+            case "$line" in
+                *"[\"$2\"]"*=*\"#*) custom="${line#*\"#}"; custom="#${custom:0:6}"; break ;;
+            esac
+        done < "$cfg/wezterm/machine.lua"
+    fi
+    if [ -n "$custom" ]; then printf -v "$1" '%s' "$custom"; return; fi
+    local palette=("#f5a97f" "#a6da95" "#8aadf4" "#c6a0f6" "#f5bde6" "#eed49f" "#8bd5ca" "#ed8796" "#91d7e3" "#f0c6c6")
+    hashv h "$2"
+    printf -v "$1" '%s' "${palette[$(( h % 10 ))]}"
+}
+
+machine_colorv() { # var host — DOT_MACHINE_COLOR, else picked from the host name
+    if [ -n "${DOT_MACHINE_COLOR:-}" ]; then printf -v "$1" '%s' "$DOT_MACHINE_COLOR"; return; fi
+    local palette=("#8ea6c6" "#7fc8b8" "#b4a0e5" "#e8b86d" "#9ccf8f" "#e59a9a") h
+    hashv h "$2"
+    printf -v "$1" '%s' "${palette[$(( h % 6 ))]}"
+}
+
+# --------------------------------------------------------------- context ---
+
+git_root() { # walk up from PWD to a .git (no git process)
+    local d="$PWD"
+    while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
+        if [ -e "$d/.git" ]; then printf '%s' "$d"; return 0; fi
+        d="${d%/*}"
+    done
+    return 1
+}
+
+share_label="" share_client=""
+if [ -f "$state/mode" ]; then
+    _share=0
+    while IFS='=' read -r k v; do
+        case "$k" in mode) [ "$v" = share ] && _share=1 ;; label) share_label="$v" ;; client) share_client="$v" ;; esac
+    done < "$state/mode"
+    [ "$_share" = 1 ] || { share_label=""; share_client=""; }
+fi
+
+is_night() { # hour — honours WezTerm's machine.lua (night = false, night_hours = { 22, 7 })
+    local from=22 to=7 line h=$(( 10#$1 ))
+    if [ -f "$cfg/wezterm/machine.lua" ]; then
+        while IFS= read -r line; do
+            case "$line" in
+                *night_hours*=*\{*)
+                    line="${line#*night_hours*\{}"; line="${line%%\}*}"; line="${line// /}"
+                    from="${line%%,*}"; to="${line#*,}" ;;
+                *night*=*false*) case "$line" in *--*night*) ;; *) return 1 ;; esac ;;
+            esac
+        done < "$cfg/wezterm/machine.lua"
+    fi
+    case "$from$to" in *[!0-9]*|"") from=22; to=7 ;; esac
+    if [ "$from" -le "$to" ]; then [ "$h" -ge "$from" ] && [ "$h" -lt "$to" ]
+    else [ "$h" -ge "$from" ] || [ "$h" -lt "$to" ]; fi
+}
+
+# ---------------------------------------------------------------- facts ---
+
+# OS name, CPU, memory size, host: slow to ask (sw_vers takes ~0.2 s), kept a day
+load_static() {
+    local f="$cache/static"
+    if [ ! -s "$f" ] || [ -n "$(find "$f" -mtime +0 2>/dev/null)" ]; then
+        mkdir -p "$cache"
+        local os cpu mem host page=4096
+        if [ "$OS" = Darwin ]; then
+            os="macOS $(sw_vers -productVersion 2>/dev/null)"
+            cpu="$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
+            mem="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))"
+            page="$(sysctl -n hw.pagesize 2>/dev/null || echo 16384)"
+            host="$(scutil --get LocalHostName 2>/dev/null || hostname -s)"
+        else
+            os="$( (. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}") )"
+            cpu="$(sed -n 's/^model name[[:space:]]*: *//p' /proc/cpuinfo 2>/dev/null | head -n 1)"
+            mem="$(( $(sed -n 's/^MemTotal: *\([0-9]*\).*/\1/p' /proc/meminfo 2>/dev/null || echo 0) / 1048576 ))"
+            host="$(hostname 2>/dev/null || uname -n)"
+        fi
+        cpu="$(printf '%s' "$cpu" | sed -E 's/\((R|TM)\)//g; s/ CPU//; s/ @.*//; s/  +/ /g')"
+        printf '%s\n%s\n%s\n%s\n%s\n%s\n' "${os:-$OS}" "$(uname -m)" "$cpu" "$mem" "${host%%.*}" "$page" > "$f.tmp" && mv "$f.tmp" "$f"
+    fi
+    { read -r s_os; read -r s_arch; read -r s_cpu; read -r s_mem; read -r s_host; read -r s_page; } < "$f"
+}
+
+uptime_text() {
+    local s=""
+    if [ "$OS" = Darwin ]; then
+        local b; b="$(sysctl -n kern.boottime 2>/dev/null)"   # { sec = 1763…, usec = … } …
+        b="${b#*sec = }"; b="${b%%,*}"
+        case "$b" in ''|*[!0-9]*) return 0 ;; esac
+        s=$(( now - b ))
+    else
+        read -r s _ < /proc/uptime 2>/dev/null || return 0
+        s="${s%%.*}"
+    fi
+    if [ "$s" -ge 86400 ]; then printf '%dd %dh' $(( s / 86400 )) $(( s % 86400 / 3600 ))
+    elif [ "$s" -ge 3600 ]; then printf '%dh %dm' $(( s / 3600 )) $(( s % 3600 / 60 ))
+    else printf '%dm' $(( s / 60 )); fi
+}
+
+battery_text() {
+    local pct="" chg=""
+    if [ "$OS" = Darwin ]; then
+        local b; b="$(pmset -g batt 2>/dev/null)"
+        case "$b" in *%*) ;; *) return 0 ;; esac
+        pct="${b%%%*}"; pct="${pct##*[!0-9]}"
+        case "$b" in *"; charging"*|*"; charged"*|*"; finishing charge"*|*"AC attached"*) chg=1 ;; esac
+    else
+        local d
+        for d in /sys/class/power_supply/BAT*; do
+            [ -r "$d/capacity" ] || continue
+            read -r pct < "$d/capacity"
+            local st=""; read -r st < "$d/status" 2>/dev/null
+            case "$st" in Charging|Full|"Not charging") chg=1 ;; esac
+            break
+        done
+    fi
+    case "$pct" in ''|*[!0-9]*) return 0 ;; esac
+    if [ -n "$chg" ]; then printf '⚡%s%%' "$pct"
+    elif [ "$pct" -le 20 ]; then printf '%s🪫 %s%%%s' "$RED" "$pct" "$R"
+    else printf '🔋 %s%%' "$pct"; fi
+}
+
+disk_mem_text() { # "36 GB free · RAM 9.2 / 18 GB"
+    local avail used=""
+    avail="$(df -Pk "$HOME" 2>/dev/null)"
+    avail="${avail##*$'\n'}"
+    # filesystem blocks used avail capacity mount
+    set -- $avail
+    avail="${4:-0}"
+    if [ "$OS" = Darwin ]; then
+        used="$(vm_stat 2>/dev/null | awk -v ps="${s_page:-16384}" \
+            '/Pages (active|wired down|occupied by compressor)/ { gsub("\\.", "", $NF); s += $NF } END { printf "%.1f", s * ps / 1073741824 }')"
+    else
+        used="$(awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { printf "%.1f", (t - a) / 1048576 }' /proc/meminfo 2>/dev/null)"
+    fi
+    local gb=$(( avail / 1048576 )) tenth=$(( avail * 10 / 1048576 % 10 ))
+    if [ "$gb" -ge 100 ]; then printf '%d GB free' "$gb"; else printf '%d.%d GB free' "$gb" "$tenth"; fi
+    [ -n "$used" ] && printf ' · RAM %s / %s GB' "$used" "$s_mem"
+}
+
+agents_text() { # agent-notify's per-session files: ● waiting (12 h) · ⟳ working (2 h)
+    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/agents" f st w=0 k=0 recent
+    [ -d "$dir" ] || return 0
+    recent="$(find "$dir" -type f -mmin -120 2>/dev/null)"
+    while IFS= read -r f; do
+        read -r st _ < "$f" 2>/dev/null || continue
+        case "$st" in
+            waiting) w=$(( w + 1 )) ;;
+            working) case "$recent" in *"$f"*) k=$(( k + 1 )) ;; esac ;;
+        esac
+    done <<EOF
+$(find "$dir" -type f -mmin -720 2>/dev/null)
+EOF
+    local out=""
+    [ "$w" -gt 0 ] && out="${RED}● $w waiting${R}"
+    [ "$k" -gt 0 ] && out="${out:+$out · }⟳ $k working"
+    printf '%s' "$out"
+}
+
+night_text() {
+    local q="$data/night/queue.json" line ready=0 queued=0
+    [ -f "$q" ] || return 0
+    while IFS= read -r line; do
+        case "$line" in
+            *'"state": "ready"'*) ready=$(( ready + 1 )) ;;
+            *'"state": "queued"'*) queued=$(( queued + 1 )) ;;
+        esac
+    done < "$q"
+    local out=""
+    [ "$ready" -gt 0 ] && out="✓ $ready ready — dot night report"
+    [ "$queued" -gt 0 ] && out="${out:+$out · }$queued queued for tonight"
+    printf '%s' "$out"
+}
+
+# ------------------------------------------------------- setup checklist ---
+
+nerd_font_installed() {
+    local d f
+    for d in "$HOME/Library/Fonts" /Library/Fonts "${XDG_DATA_HOME:-$HOME/.local/share}/fonts" /usr/share/fonts /usr/local/share/fonts; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*NerdFont* "$d"/*/*NerdFont* "$d"/*"Nerd Font"* "$d"/*/*"Nerd Font"*; do
+            [ -e "$f" ] && return 0
+        done
+    done
+    return 1
+}
+
+setup_items() { # done(0/1) TAB label TAB how — cheap file checks only
+    local ok
+    ok=0; grep -qs 'user:' "$cfg/gh/hosts.yml" && ok=1
+    printf '%s\tGitHub CLI login\tgh auth login\n' "$ok"
+    ok=0; grep -qs '"oauthAccount"' "$HOME/.claude.json" && ok=1
+    printf '%s\tClaude Code login (ai, agents, night shift)\tclaude, then /login\n' "$ok"
+    ok=0; { [ -e "$cfg/github-copilot/apps.json" ] || [ -e "$cfg/github-copilot/hosts.json" ]; } && ok=1
+    printf '%s\tCopilot in Neovim\tnvim, then :Copilot auth\n' "$ok"
+    ok=0; [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/session" ] && ok=1
+    printf '%s\tHistory sync between machines\tdot sync-history\n' "$ok"
+    ok=0; nerd_font_installed && ok=1
+    printf '%s\tNerd Font (icons outside WezTerm)\tinstall.sh\n' "$ok"
+    ok=0; { grep -qs 'email *=' "$cfg/git/local" || grep -qs 'email *=' "$HOME/.gitconfig"; } && ok=1
+    printf '%s\tgit name and email\tinstall.sh asks, or ~/.config/git/local\n' "$ok"
+    ok=0; case "${SHELL:-}" in */zsh) ok=1 ;; esac
+    printf '%s\tzsh as your login shell\tchsh -s "$(command -v zsh)"\n' "$ok"
+}
+
+setup_cmd() {
+    if [ "${1:-}" = --dismiss ]; then
+        mkdir -p "$state"; touch "$state/hello-setup-dismissed"
+        echo "✓ the card won't show the setup line any more (dot hello setup still lists it)"; return
+    fi
+    local done_n=0 all=0 d label how green red
+    escv green fg "#a6da95"; escv red fg "#ed8796"
+    printf '%sThis machine%s\n' "$B" "$R"
+    while IFS="$TAB" read -r d label how; do
+        all=$(( all + 1 ))
+        if [ "$d" = 1 ]; then done_n=$(( done_n + 1 )); printf '  %s✓%s %s\n' "$green" "$R" "$label"
+        else printf '  %s✗%s %-46s %s%s%s\n' "$red" "$R" "$label" "$D" "$how" "$R"; fi
+    done <<EOF
+$(setup_items)
+EOF
+    printf '\n%s/%s done' "$done_n" "$all"
+    [ "$done_n" -lt "$all" ] && printf ' · %sdot hello setup --dismiss%s hides the line on the card' "$D" "$R"
+    printf '\n'
+}
+
+setup_line() { # "⚙ setup: 2 of 7 left — History sync, Copilot · dot hello setup"
+    [ -f "$state/hello-setup-dismissed" ] && return 0
+    local left=0 all=0 d label how todo=""
+    while IFS="$TAB" read -r d label how; do
+        all=$(( all + 1 ))
+        [ "$d" = 1 ] && continue
+        left=$(( left + 1 )); todo="${todo:+$todo, }${label%% (*}"
+    done <<EOF
+$(setup_items)
+EOF
+    [ "$left" -gt 0 ] && printf '⚙  setup: %s of %s left — %s %s· dot hello setup%s' "$left" "$all" "$todo" "$D" "$R"
+}
+
+# -------------------------------------------------- background refresh ---
+
+run_py() { # script args… — the same way the dot dispatcher runs them
+    if command -v uv >/dev/null 2>&1; then uv run --quiet --script "$here/$1" "${@:2}"
+    else python3 "$here/$1" "${@:2}"; fi
+}
+
+refresh() {
+    mkdir -p "$cache"
+    refresh_lock="$cache/refresh.lock"   # global: the EXIT trap runs after this function
+    if ! mkdir "$refresh_lock" 2>/dev/null; then
+        [ -n "$(find "$refresh_lock" -mmin +10 2>/dev/null)" ] || return 0
+    fi
+    trap 'rmdir "$refresh_lock" 2>/dev/null' EXIT
+    # commits that are on no remote, across ~/Github
+    local d n total=0 repos=0
+    for d in "$projects"/*/; do
+        [ -e "$d.git" ] || continue
+        n="$(git -C "$d" rev-list --count --branches --not --remotes 2>/dev/null)" || continue
+        if [ "${n:-0}" -gt 0 ]; then total=$(( total + n )); repos=$(( repos + 1 )); fi
+    done
+    printf '%s\t%s\n' "$total" "$repos" > "$cache/unpushed"
+    # agent sessions nobody heard from in a day
+    find "${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/agents" -type f -mmin +1440 -exec rm -f {} + 2>/dev/null
+    local today; today="$(date +%F)"
+    # tip of the day: dot tip works out which features you haven't used yet
+    if [ "$(sed -n 1p "$cache/tip-day" 2>/dev/null)" != "$today" ] && [ -x "$here/dot-tip" ]; then
+        "$here/dot-tip" --refresh >/dev/null 2>&1 && echo "$today" > "$cache/tip-day"
+    fi
+    # yesterday's credits, once a day
+    if [ "$(sed -n 1p "$cache/credits" 2>/dev/null)" != "$today" ] && [ -f "$here/dot-wrapped" ]; then
+        local line
+        line="$(run_py dot-wrapped credits --yesterday --line 2>/dev/null | head -n 1)"
+        printf '%s\n%s\n' "$today" "$line" > "$cache/credits"
+    fi
+    # next meeting, every 30 min
+    if [ -n "${DOT_CALENDAR_ICS:-}" ] && [ -f "$here/dot-calendar" ] \
+        && [ -z "$(find "$cache/next-meeting" -mmin -30 2>/dev/null)" ]; then
+        run_py dot-calendar >/dev/null 2>&1 || true
+    fi
+    touch "$cache/refreshed"
+}
+
+refresh_in_background() {
+    [ -n "${DOT_HELLO_NO_REFRESH:-}" ] && return 0
+    [ -n "$(find "$cache/refreshed" -mmin -15 2>/dev/null)" ] && return 0
+    ( "$here/dot-hello" --refresh >/dev/null 2>&1 & ) >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------- render ---
+
+# Read the logo into logo_lines[], coloured: region 1 wings (base colour),
+# 2 front bar (lighter), 3 back bar (darker). At night the lower half glows.
+paint_logo() { # file base night
+    local file="$1" base="$2" night="$3" line n=0 i=0 heat c1 c2 c3 e
+    local raw=()
+    while IFS= read -r line || [ -n "$line" ]; do raw+=("$line"); n=$(( n + 1 )); done < "$file"
+    logo_lines=(); logo_width=0
+    for line in ${raw[@]+"${raw[@]}"}; do
+        case "$line" in
+            *'{f'*|*'{r}'*)
+                if [ "$color" = 1 ]; then
+                    c1="$base"; mixv c2 "$base" "#ffffff" 45; mixv c3 "$base" "#000000" 35
+                    if [ "$night" = 1 ] && [ "$n" -gt 1 ]; then
+                        heat=$(( i * 100 / (n - 1) ))
+                        if [ "$heat" -gt 35 ]; then
+                            heat=$(( (heat - 35) * 85 / 65 ))
+                            mixv c1 "$c1" "#ff8a3d" "$heat"; mixv c2 "$c2" "#ffc27a" "$heat"; mixv c3 "$c3" "#c2410c" "$heat"
+                        fi
+                    fi
+                    line="${line//\{r\}/$R}"
+                    escv e fg "$c1"; line="${line//\{f1\}/$e}"; escv e bg "$c1"; line="${line//\{b1\}/$e}"
+                    escv e fg "$c2"; line="${line//\{f2\}/$e}"; escv e bg "$c2"; line="${line//\{b2\}/$e}"
+                    escv e fg "$c3"; line="${line//\{f3\}/$e}"; escv e bg "$c3"; line="${line//\{b3\}/$e}"
+                else
+                    local t
+                    for t in r f1 f2 f3 b1 b2 b3; do line="${line//\{$t\}/}"; done
+                fi ;;
+        esac
+        logo_lines+=("$line")
+        i=$(( i + 1 ))
+    done
+    # width: the byteforge logo pads every line; for other logos, measure
+    local plain t
+    for line in ${raw[@]+"${raw[@]}"}; do
+        plain="$line"
+        for t in r f1 f2 f3 b1 b2 b3; do plain="${plain//\{$t\}/}"; done
+        [ ${#plain} -gt "$logo_width" ] && logo_width=${#plain}
+    done
+}
+
+client_logo() { # a client's logo for share mode, if there is one
+    local dir="$cfg/dotfiles/logos" k f lower
+    lower="$(printf '%s' "$share_label" | tr '[:upper:] ' '[:lower:]-')"
+    for k in "$share_client" "$lower"; do
+        [ -n "$k" ] || continue
+        for f in "$dir/$k.logo" "$dir/$k.txt"; do [ -f "$f" ] && { printf '%s' "$f"; return 0; }; done
+    done
+    return 1
+}
+
+sparks() { # strike the anvil: sparks fly out of the notch between the posts
+    # $1 = how many lines the cursor is below the logo's first line (column 1)
+    local up="$1" hot cold f
+    escv hot fg "#ffd27f"; escv cold fg "#ff8a3d"
+    put() { # row col char colour (row -1 = the blank line above the logo)
+        # (save cursor = ESC 7, restore = ESC 8; not \0337 — printf reads that as octal 337)
+        printf '%s\033[%dA\033[%dG%s%s%s%s' $'\e7' $(( up - $1 )) $(( $2 + 2 )) "$4" "$3" "$R" $'\e8'
+    }
+    for f in 1 2 3 4 5; do
+        case $f in
+            1) put 1 17 '✦' "$hot" ;;
+            2) put 1 17 ' ' ""; put 0 16 '*' "$hot"; put 0 18 '*' "$hot" ;;
+            3) put 0 16 ' ' ""; put 0 18 ' ' ""; put 0 17 "'" "$cold"; put -1 15 '·' "$hot"; put -1 19 '·' "$hot" ;;
+            4) put 0 17 ' ' ""; put -1 15 ' ' ""; put -1 19 ' ' ""; put -1 13 '.' "$cold"; put -1 21 '.' "$cold" ;;
+            5) put -1 13 ' ' ""; put -1 21 ' ' "" ;;
+        esac
+        sleep 0.06
+    done
+}
+
+card() { # startup | show | fetch
+    local mode="$1"
+    local cols="${COLUMNS:-}" rows="${LINES:-}"
+    if [ -z "$cols" ] || [ -z "$rows" ]; then
+        local sz; sz="$(stty size 2>/dev/null </dev/tty)"
+        rows="${sz% *}"; cols="${sz#* }"
+    fi
+    case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
+    case "$rows" in ''|*[!0-9]*) rows=24 ;; esac
+
+    local hour wday today
+    read -r now hour wday today <<EOF
+$(date '+%s %H %u %F')
+EOF
+    local first_today=0
+    if [ "$(cat "$state/hello-day" 2>/dev/null)" != "$today" ]; then
+        first_today=1
+        mkdir -p "$state"; printf '%s' "$today" > "$state/hello-day"
+    fi
+
+    local style="${DOT_HELLO:-auto}"
+    [ "$mode" != startup ] && style=full
+    if [ "$style" = auto ]; then
+        if [ "$cols" -ge 78 ] && [ "$rows" -ge 20 ]; then style=full
+        elif [ "$cols" -ge 40 ]; then style=compact
+        else return 0; fi
+    fi
+
+    load_static
+    local mcolor base root="" project="" night=0
+    machine_colorv mcolor "$s_host"
+    base="$mcolor"
+    if root="$(git_root)"; then project="${root##*/}"; project_colorv base "$project"; fi
+    is_night "$hour" && night=1
+
+    local agents="" nightq="" tip="" meeting="" credits="" ci="" unpushed=""
+    if [ -z "$share_label" ]; then
+        agents="$(agents_text)"
+        nightq="$(night_text)"
+        [ -f "${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/ci-runner" ] && read -r ci < "${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/ci-runner"
+        local u r
+        if [ -f "$cache/unpushed" ] && read -r u r < "$cache/unpushed" && [ "${u:-0}" -gt 0 ] 2>/dev/null; then
+            unpushed="$u commit$([ "$u" = 1 ] || echo s) in $r repo$([ "$r" = 1 ] || echo s) not pushed"
+        fi
+        [ -f "$cache/tip" ] && read -r tip < "$cache/tip"
+        if [ -s "$cache/next-meeting" ]; then
+            local start hm title in
+            IFS="$TAB" read -r start hm title < "$cache/next-meeting"
+            case "$start" in ''|*[!0-9]*) ;; *)
+                in=$(( (start - now) / 60 ))
+                if [ "$in" -ge -30 ] && [ "$in" -le 720 ]; then
+                    if [ "$in" -le 0 ]; then meeting="📅 now: $title ($hm)"
+                    elif [ "$in" -lt 60 ]; then meeting="📅 $hm $title ${RED}in $in min${R}"
+                    else meeting="📅 $hm $title"; fi
+                fi ;;
+            esac
+        fi
+        if [ "$first_today" = 1 ] && [ -f "$cache/credits" ]; then
+            local cday cline
+            { read -r cday; read -r cline; } < "$cache/credits"
+            [ "$cday" = "$today" ] && credits="$cline"
+        fi
+    fi
+    local setup; setup="$(setup_line)"
+    local wrapped=""
+    [ -z "$share_label" ] && [ "$first_today" = 1 ] && [ "$wday" = 5 ] && wrapped="🎁 your week, wrapped — dot wrapped"
+
+    local mc lbl; escv mc fg "$mcolor"; escv lbl fg "$base"
+    local user="${USER:-$(id -un)}"
+    if [ "$style" = compact ]; then
+        local s="${mc}▟▙${R} ${B}$s_host${R}"
+        [ -n "$share_label" ] && s="$s · ${RED}SHARING · $share_label${R}"
+        [ -n "$agents" ] && s="$s · $agents"
+        [ -n "$meeting" ] && s="$s · $meeting"
+        [ -n "$tip" ] && s="$s · ${D}💡 $tip${R}"
+        printf '%s\n' "$s"
+        return 0
+    fi
+
+    # right-hand column
+    local info=() rule
+    printf -v rule '%*s' $(( ${#user} + ${#s_host} + 1 )) ''
+    info+=("${mc}${B}${user}${R}${D}@${R}${mc}${B}${s_host}${R}")
+    info+=("${D}${rule// /─}${R}")
+    info+=("${lbl}OS${R}      $s_os · $s_arch")
+    local up bat; up="$(uptime_text)"; bat="$(battery_text)"
+    info+=("${lbl}Up${R}      ${up:-?}${bat:+ · $bat}")
+    info+=("${lbl}Disk${R}    $(disk_mem_text)")
+    [ -n "$s_cpu" ] && info+=("${lbl}CPU${R}     $s_cpu")
+    if [ -n "$share_label" ]; then
+        info+=("" "${RED}● SHARING · $share_label${R}  ${D}dot mode work${R}")
+    else
+        local pc; escv pc fg "$base"
+        [ -n "$project" ] && info+=("${lbl}Project${R} ${pc}${B}$project${R}")
+        [ -n "$agents" ] && info+=("${lbl}Agents${R}  $agents")
+        [ -n "$nightq" ] && info+=("${lbl}Night${R}   $nightq")
+        [ -n "$unpushed" ] && info+=("${lbl}Git${R}     $unpushed")
+        case "$ci" in
+            up) info+=("${lbl}CI${R}      runner up") ;;
+            down) info+=("${lbl}CI${R}      ${RED}runner down${R} ${D}(jobs go to GitHub's)${R}") ;;
+        esac
+    fi
+    if [ "$color" = 1 ]; then   # colour blocks, like neofetch's
+        local sw="" c e
+        for c in "#ed8796" "#f5a97f" "#eed49f" "#a6da95" "#8bd5ca" "#8aadf4" "#c6a0f6" "#f5bde6"; do escv e fg "$c"; sw="${sw}${e}███"; done
+        info+=("" "$sw$R")
+    fi
+
+    # logo
+    local logo="$hello_dir/byteforge.logo" own=1
+    if [ -n "$share_label" ]; then
+        local cl; if cl="$(client_logo)"; then logo="$cl"; own=0; fi
+    fi
+    logo_lines=(); logo_width=0
+    [ -f "$logo" ] && paint_logo "$logo" "$base" "$night"
+    local total=${#logo_lines[@]}
+    [ ${#info[@]} -gt "$total" ] && total=${#info[@]}
+
+    local out="" i l pad plain t
+    out=$'\n'
+    for (( i = 0; i < total; i++ )); do
+        l="${logo_lines[$i]:-}"
+        if [ "$own" = 1 ] && [ -n "$l" ]; then
+            pad=3
+        else
+            plain="$l"
+            [ "$color" = 1 ] && plain="$(printf '%s' "$l" | sed $'s/\033\\[[0-9;]*m//g')"
+            pad=$(( logo_width - ${#plain} + 3 ))
+            [ -z "$l" ] && pad=$(( logo_width + 3 ))
+        fi
+        printf -v t ' %s%*s%s\n' "$l" "$pad" '' "${info[$i]:-}"
+        out="$out$t"
+    done
+
+    # briefing
+    local brief=()
+    [ -n "$meeting" ] && brief+=("$meeting")
+    [ -n "$setup" ] && brief+=("$setup")
+    [ -n "$credits" ] && brief+=("$credits")
+    [ -n "$wrapped" ] && brief+=("$wrapped")
+    [ -n "$tip" ] && brief+=("${D}💡 $tip${R}")
+    if [ ${#brief[@]} -gt 0 ]; then
+        out="$out"$'\n'
+        for l in "${brief[@]}"; do out="$out  $l"$'\n'; done
+    fi
+    printf '%s\n' "$out"
+
+    # sparks: first window of the day, on this machine, not while sharing
+    local below=$(( total + 1 ))
+    [ ${#brief[@]} -gt 0 ] && below=$(( below + 1 + ${#brief[@]} ))
+    if [ -t 1 ] && [ "$color" = 1 ] && [ "${DOT_HELLO_SPARKS:-1}" != 0 ] && [ -z "$share_label" ] \
+        && [ -z "${SSH_CONNECTION:-}" ] && [ "$own" = 1 ] && [ ${#logo_lines[@]} -gt 0 ] \
+        && { [ "$mode" = fetch ] || { [ "$mode" = startup ] && [ "$first_today" = 1 ]; }; }; then
+        sparks "$below"
+    fi
+}
+
+case "${1:-show}" in
+    --startup) card startup; refresh_in_background ;;
+    show|--show|"") card show; refresh_in_background ;;
+    fetch|--fetch) card fetch; refresh_in_background ;;
+    setup) shift; setup_cmd "$@" ;;
+    --refresh) refresh ;;
+    -h|--help|help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) echo "dot hello: unknown option $1 (dot hello --help)" >&2; exit 1 ;;
+esac

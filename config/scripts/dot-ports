@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# dot ports              what's listening: port, project (+ branch / worktree),
+#                        program, PID and its URL (your processes only)
+# dot ports kill PORT    stop what listens there (shows it, asks; -y = don't ask)
+# dot ports open PORT    open it in the browser (its https name if it has one)
+# dot ports --json       the same list as JSON, for scripts
+#
+# dot name [NAME] [PORT] https://NAME.localhost → that port, with a trusted
+#                        certificate (Caddy). Defaults: NAME = this repo's
+#                        folder, PORT = the one port this repo listens on.
+# dot name               list names and whether something answers behind them
+# dot name rm NAME       remove one
+#
+# Names are kept per machine in ~/.config/dotfiles/names.tsv (not committed).
+# *.localhost always means this machine (macOS, browsers, systemd-resolved),
+# so there's nothing to set up in DNS or /etc/hosts. The first name asks once
+# for your password so the system trusts Caddy's local certificates.
+set -uo pipefail
+
+OS="${DOT_PORTS_OS:-$(uname -s)}"        # override for tests only
+PROC="${DOT_PORTS_PROC:-/proc}"          # ditto (Linux: process folders)
+names="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/names.tsv"
+cdir="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/caddy"
+caddyfile="$cdir/Caddyfile"
+admin="localhost:2019"
+label="software.byteforge.dot-caddy"
+tab="$(printf '\t')"
+
+if [ -t 1 ]; then tty=1; else tty=0; fi
+dim() { if [ "$tty" = 1 ]; then printf '\033[2m%s\033[0m' "$*"; else printf '%s' "$*"; fi; }
+die() { echo "dot ports: $*" >&2; exit 1; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
+
+# --- colours: same as the WezTerm tab stripes (features.lua color_for) --------
+palette="f5a97f a6da95 8aadf4 c6a0f6 f5bde6 eed49f 8bd5ca ed8796 91d7e3 f0c6c6"
+color_for() { # name → rrggbb
+    local name="$1" custom h=0 i c
+    custom="$(sed -n "s/.*\[\"$name\"\][[:space:]]*=[[:space:]]*\"#\([0-9a-fA-F]\{6\}\)\".*/\1/p" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/wezterm/machine.lua" 2>/dev/null | head -n 1)"
+    if [ -n "$custom" ]; then printf '%s' "$custom"; return; fi
+    for ((i = 0; i < ${#name}; i++)); do
+        c="$(printf '%d' "'${name:i:1}")"
+        h=$(( (h * 31 + c) % 2147483647 ))
+    done
+    set -- $palette
+    shift $(( h % 10 ))
+    printf '%s' "$1"
+}
+paint() { # rrggbb text
+    if [ "$tty" = 1 ]; then
+        printf '\033[38;2;%d;%d;%dm%s\033[0m' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}" "$2"
+    else printf '%s' "$2"; fi
+}
+link() { # url
+    if [ "$tty" = 1 ]; then printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$1"; else printf '%s' "$1"; fi
+}
+
+# --- what's listening: "port<TAB>pid<TAB>program", one per port+pid ----------
+listening() {
+    if [ "$OS" = Darwin ]; then
+        lsof -nP -a -u "$(id -u)" -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null | awk '
+            /^p/ { pid = substr($0, 2) }
+            /^c/ { cmd = substr($0, 2) }
+            /^n/ { a = substr($0, 2); sub(/.*:/, "", a); if (!seen[a " " pid]++) print a "\t" pid "\t" cmd }'
+    else
+        ss -ltnpH 2>/dev/null | awk '{
+            a = $4; sub(/.*:/, "", a); s = $0
+            while (match(s, /\("[^"]*",pid=[0-9]+/)) {
+                m = substr(s, RSTART + 2, RLENGTH - 2); s = substr(s, RSTART + RLENGTH)
+                split(m, q, "\",pid=")
+                if (!seen[a " " q[2]]++) print a "\t" q[2] "\t" q[1]
+            }
+        }'
+    fi | sort -t "$tab" -k1,1n -k2,2n
+}
+
+cwd_of() { # pid → folder it runs in
+    if [ "$OS" = Darwin ]; then
+        lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+    else
+        readlink "$PROC/$1/cwd" 2>/dev/null
+    fi
+}
+
+# folder → "root<TAB>name<TAB>branch<TAB>kind" (kind: repo / worktree / night)
+project_of() {
+    local dir="$1" root branch kind=repo gd cd
+    [ -n "$dir" ] && [ -d "$dir" ] || return 1
+    root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ -n "$root" ] || return 1
+    branch="$(git -C "$root" branch --show-current 2>/dev/null)"
+    [ -n "$branch" ] || branch="$(git -C "$root" rev-parse --short HEAD 2>/dev/null)"
+    [ -n "$branch" ] || branch=-
+    gd="$(cd "$root" && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P)"
+    cd="$(cd "$root" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)"
+    [ -n "$gd" ] && [ "$gd" != "$cd" ] && kind=worktree
+    case "$root" in */.night/*) kind=night ;; esac
+    printf '%s\t%s\t%s\t%s\n' "$root" "$(basename "$root")" "$branch" "$kind"
+}
+
+name_for_port() { [ -f "$names" ] && awk -F'\t' -v p="$1" '$2 == p { print $1; exit }' "$names"; }
+
+# full rows: port pid program root name branch kind url ("-" = none: tabs are
+# whitespace to `read`, so empty fields would collapse)
+rows() {
+    local port pid cmd info url n
+    listening | while IFS="$tab" read -r port pid cmd; do
+        [ -n "$port" ] || continue
+        info="$(project_of "$(cwd_of "$pid")")" || info="-$tab-$tab-$tab-"
+        n="$(name_for_port "$port")"
+        if [ -n "$n" ]; then url="https://$n.localhost"; else url="http://localhost:$port"; fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "$port" "$pid" "$cmd" "$info" "$url"
+    done
+}
+
+show() {
+    local all port pid cmd root name branch kind url proj plain pad
+    all="$(rows)"
+    if [ -z "$all" ]; then echo "nothing of yours is listening"; return 0; fi
+    printf '%s\n' "$(dim "$(printf '%-6s %-32s %-14s %-7s %s' PORT PROJECT PROGRAM PID URL)")"
+    printf '%s\n' "$all" | while IFS="$tab" read -r port pid cmd root name branch kind url; do
+        if [ "$name" != - ]; then
+            plain="$name"
+            [ "${#branch}" -gt 18 ] && branch="${branch:0:17}…"
+            [ "$branch" != - ] && plain="$plain ($branch)"
+            case "$kind" in worktree) plain="$plain ⑂" ;; night) plain="$plain ☾" ;; esac
+            proj="$(paint "$(color_for "$name")" "$name")${plain#"$name"}"
+        else
+            plain="-"; proj="$(dim -)"
+        fi
+        pad=$(( 32 - ${#plain} )); [ "$pad" -lt 1 ] && pad=1
+        printf '%-6s %s%*s %-14s %-7s %s\n' "$port" "$proj" "$pad" "" "${cmd:0:14}" "$pid" "$(link "$url")"
+    done
+}
+
+json() {
+    command -v jq >/dev/null 2>&1 || die "needs jq"
+    rows | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") |
+        map(if . == "-" then null else . end) |
+        {port: (.[0] | tonumber), pid: (.[1] | tonumber), program: .[2],
+         root: .[3], project: .[4], branch: .[5], kind: .[6], url: .[7]})'
+}
+
+port_arg() { case "${1:-}" in ''|*[!0-9]*) die "need a port number (dot ports lists them)" ;; esac; }
+
+kill_port() {
+    local port="" yes=0 a hits pids p ans i alive
+    for a in "$@"; do case "$a" in -y|--yes) yes=1 ;; *) port="$a" ;; esac; done
+    port_arg "$port"
+    hits="$(rows | awk -F'\t' -v p="$port" '$1 == p')"
+    [ -n "$hits" ] || die "nothing of yours listens on $port"
+    printf '%s\n' "$hits" | awk -F'\t' '{ printf "  %s  %s (pid %s)%s\n", $1, $3, $2, ($5 != "-" ? "  · " $5 " (" $6 ")" : "") }'
+    if [ "$yes" = 0 ]; then
+        printf 'Stop it? [y/N] '
+        read -r ans || ans=n
+        case "$ans" in y|Y|yes) ;; *) echo "left running"; return 0 ;; esac
+    fi
+    pids="$(printf '%s\n' "$hits" | cut -f2 | sort -u)"
+    for p in $pids; do kill "$p" 2>/dev/null; done
+    for i in 1 2 3 4 5 6; do
+        alive=""
+        for p in $pids; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+        [ -z "$alive" ] && { echo "✓ stopped"; return 0; }
+        sleep 0.5
+    done
+    echo "still running after 3 s — force it with: kill -9$alive"
+    return 1
+}
+
+opener() { if [ "$OS" = Darwin ]; then open "$1"; else xdg-open "$1" >/dev/null 2>&1 & fi; }
+
+open_port() {
+    local port="${1:-}" n url
+    port_arg "$port"
+    n="$(name_for_port "$port")"
+    if [ -n "$n" ]; then url="https://$n.localhost"; else url="http://localhost:$port"; fi
+    echo "→ $url"
+    opener "$url"
+}
+
+# --- names (Caddy) -------------------------------------------------------------
+write_caddyfile() {
+    mkdir -p "$cdir"
+    {
+        echo "# Generated by \`dot name\` — change names with it, not by editing this file."
+        echo "{"
+        echo "	admin $admin"
+        echo "	local_certs"
+        echo "	skip_install_trust"
+        echo "}"
+        [ -f "$names" ] && while IFS="$tab" read -r n p; do
+            [ -n "$n" ] || continue
+            printf '\n%s.localhost {\n\treverse_proxy 127.0.0.1:%s\n}\n' "$n" "$p"
+        done < "$names"
+    } > "$caddyfile.tmp" && mv "$caddyfile.tmp" "$caddyfile"
+}
+
+caddy_up() { curl -fsS -m 1 -o /dev/null "http://$admin/config/" 2>/dev/null; }
+
+has_service() {
+    if [ "$OS" = Darwin ]; then
+        [ -f "$HOME/Library/LaunchAgents/$label.plist" ]
+    else
+        [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dot-caddy.service" ] && command -v systemctl >/dev/null 2>&1
+    fi
+}
+
+bind_help() {
+    if printf '%s' "$1" | grep -qiE 'permission denied|bind:|cannot assign'; then
+        echo "Caddy can't listen on port 443."
+        # shellcheck disable=SC2016
+        [ "$OS" = Linux ] && echo '  fix (once): sudo setcap cap_net_bind_service=+ep "$(command -v caddy)"'
+    fi
+}
+
+apply() { # regenerate the Caddyfile and make Caddy use it
+    local out
+    write_caddyfile
+    if ! command -v caddy >/dev/null 2>&1; then
+        echo "! Caddy isn't installed (run install.sh) — the name is saved and works once it is"
+        return 0
+    fi
+    if caddy_up; then
+        out="$(caddy reload --config "$caddyfile" --adapter caddyfile 2>&1)" || { echo "$out" >&2; bind_help "$out"; return 1; }
+    elif has_service; then
+        if [ "$OS" = Darwin ]; then
+            launchctl kickstart -k "gui/$(id -u)/$label" >/dev/null 2>&1 \
+                || launchctl load "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null
+        else
+            systemctl --user restart dot-caddy 2>/dev/null
+        fi
+        wait_up || { echo "! Caddy's service didn't start — check: $(service_log_hint)"; return 1; }
+    else
+        out="$(caddy start --config "$caddyfile" --adapter caddyfile 2>&1)" || { echo "$out" >&2; bind_help "$out"; return 1; }
+    fi
+    return 0
+}
+
+wait_up() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do caddy_up && return 0; sleep 0.3; done; return 1; }
+service_log_hint() {
+    if [ "$OS" = Darwin ]; then echo "$cdir/caddy.log"; else echo "journalctl --user -u dot-caddy"; fi
+}
+
+ca_root() {
+    local d
+    if [ "$OS" = Darwin ]; then d="$HOME/Library/Application Support/Caddy"
+    else d="${XDG_DATA_HOME:-$HOME/.local/share}/caddy"; fi
+    printf '%s' "$d/pki/authorities/local/root.crt"
+}
+
+ca_trusted() { # 0 = this machine trusts Caddy's local certificates
+    local root
+    root="$(ca_root)"
+    [ -f "$root" ] || return 1
+    if [ "$OS" = Darwin ]; then
+        security verify-cert -c "$root" >/dev/null 2>&1
+    else
+        openssl verify "$root" >/dev/null 2>&1
+    fi
+}
+
+ensure_trust() {
+    command -v caddy >/dev/null 2>&1 || return 0
+    ca_trusted && return 0
+    local i; for i in 1 2 3 4 5 6 7 8 9 10; do [ -f "$(ca_root)" ] && break; sleep 0.3; done
+    ca_trusted && return 0
+    echo "Your browser needs to trust Caddy's local certificates (once per machine)."
+    if [ -t 0 ]; then
+        echo "Running \`caddy trust\` — it asks for your password:"
+        caddy trust --address "$admin" || echo "! not trusted yet — run: caddy trust"
+    else
+        echo "  run: caddy trust"
+    fi
+}
+
+sanitize() { printf '%s' "$1" | tr '[:upper:]_. ' '[:lower:]---' | tr -cd 'a-z0-9-' | sed 's/^-*//; s/-*$//'; }
+
+here_ports() { # ports whose process runs inside this repo
+    local root="$1"
+    rows | awk -F'\t' -v r="$root" '$4 == r { print $1 }' | sort -un
+}
+
+name_add() {
+    local name="" port="" a root choices n
+    for a in "$@"; do
+        case "$a" in
+            *[!0-9]*) name="$a" ;;
+            ?*) port="$a" ;;
+        esac
+    done
+    root="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -z "$name" ]; then
+        [ -n "$root" ] || die "not in a git repo — give a name: dot name NAME PORT"
+        name="$(basename "$root")"
+    fi
+    name="$(sanitize "$name")"
+    [ -n "$name" ] || die "a name needs letters or digits"
+    if [ -z "$port" ]; then
+        [ -n "$root" ] || die "which port? dot name $name PORT"
+        choices="$(here_ports "$root")"
+        n="$(printf '%s' "$choices" | grep -c .)"
+        if [ "$n" -eq 0 ]; then die "nothing in $(basename "$root") is listening yet — start it, or: dot name $name PORT"; fi
+        if [ "$n" -gt 1 ]; then die "$(basename "$root") listens on $(printf '%s' "$choices" | tr '\n' ' ')— pick one: dot name $name PORT"; fi
+        port="$choices"
+    fi
+    mkdir -p "$(dirname "$names")"
+    { [ -f "$names" ] && awk -F'\t' -v n="$name" '$1 != n' "$names"; printf '%s\t%s\n' "$name" "$port"; } > "$names.tmp" \
+        && mv "$names.tmp" "$names"
+    apply || return 1
+    echo "✓ https://$name.localhost → 127.0.0.1:$port"
+    ensure_trust
+}
+
+name_rm() {
+    local name="${1:-}"
+    [ -n "$name" ] || die "usage: dot name rm NAME"
+    name="$(sanitize "$name")"
+    [ -f "$names" ] && awk -F'\t' -v n="$name" '$1 == n { f = 1 } END { exit !f }' "$names" || die "no name $name (dot name lists them)"
+    awk -F'\t' -v n="$name" '$1 != n' "$names" > "$names.tmp" && mv "$names.tmp" "$names"
+    apply || return 1
+    echo "✓ removed $name.localhost"
+}
+
+name_list() {
+    if [ ! -s "$names" ]; then echo "no names yet — in a repo with a running dev server: dot name"; return 0; fi
+    local up n p mark
+    up=" $(listening | cut -f1 | tr '\n' ' ')"
+    while IFS="$tab" read -r n p; do
+        [ -n "$n" ] || continue
+        case "$up" in *" $p "*) mark="$(paint a6da95 "● up")" ;; *) mark="$(dim "○ nothing on $p")" ;; esac
+        printf '%s  → %-6s %s\n' "$(link "https://$n.localhost")" "$p" "$mark"
+    done < "$names"
+    command -v caddy >/dev/null 2>&1 && ! caddy_up && echo "$(dim "(Caddy isn't running — dot name $n $p starts it)")"
+    return 0
+}
+
+names_cmd() {
+    case "${1:-}" in
+        "") name_list ;;
+        rm|remove|del) shift; name_rm "$@" ;;
+        ls|list) name_list ;;
+        -h|--help|help) usage ;;
+        *) name_add "$@" ;;
+    esac
+}
+
+case "${1:-}" in
+    "") show ;;
+    --json|json) json ;;
+    kill|stop) shift; kill_port "$@" ;;
+    open) shift; open_port "$@" ;;
+    name|names) shift; names_cmd "$@" ;;
+    trusted) ca_trusted ;;   # for dot doctor
+    caddyfile) write_caddyfile; printf '%s\n' "$caddyfile" ;;   # for install.sh
+    -h|--help|help) usage ;;
+    *) usage; exit 1 ;;
+esac

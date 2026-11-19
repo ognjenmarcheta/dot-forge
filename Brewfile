@@ -5,6 +5,7 @@ tap "nikitabobko/tap"
 
 # terminal + shell
 cask "wezterm" unless ENV["CI"]
+cask "font-jetbrains-mono-nerd-font" unless ENV["CI"]   # icons in other terminals / editors (WezTerm has its own)
 brew "starship"
 brew "zoxide"
 brew "fzf"
@@ -54,6 +55,7 @@ brew "tmux"             # dot invite: the shared pane (viewers attach read-only)
 brew "ttyd"             # dot invite: the pane in a browser
 brew "cloudflared"      # dot invite: temporary public link (no account needed)
 brew "qrencode"         # QR codes in the terminal (dot invite)
+brew "caddy"            # dot name: https://NAME.localhost → a local port
 
 # window manager
 cask "nikitabobko/tap/aerospace" unless ENV["CI"]
