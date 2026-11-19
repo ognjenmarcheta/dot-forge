@@ -330,7 +330,6 @@ echo "dot upgrade restarts sessions"
 # test's output open)
 mux="dot-test-mux-$$"
 ln -s "$(command -v bash)" "$FB/$mux"
-ln -s "$(command -v sleep)" "$FB/claude.sleep"
 alive() { kill -0 "$1" 2>/dev/null && ! ps -o stat= -p "$1" 2>/dev/null | grep -q Z; }
 export DOT_MUX_PATTERN="$mux" DOT_SESSIONS_DELAY=0 DOTFILES_DIR="$DOT"
 "$FB/$mux" -c 'sleep 30; :' >/dev/null 2>&1 & srv=$!   # (two commands: bash would exec a single one and lose the name)
@@ -340,7 +339,9 @@ check "says what happens and how to skip it" '[[ "$out" == *"Restarting WezTerm"
 for _ in $(seq 1 30); do alive "$srv" || break; sleep 0.1; done
 check "the session server is ended" '! alive "$srv"'
 # a Claude session inside: never ended without a yes
-mkdir -p "$T/agentbin"; ln -s "$(command -v sleep)" "$T/agentbin/claude"
+# a script, not a symlink to sleep: the Rust coreutils on newer Ubuntu refuse
+# to run under another name, so a `claude -> sleep` link exits at once
+mkdir -p "$T/agentbin"; printf '#!/bin/sh\nsleep "$1"\n' > "$T/agentbin/claude"; chmod +x "$T/agentbin/claude"
 "$FB/$mux" -c "\"$T/agentbin/claude\" 30 & wait" >/dev/null 2>&1 & srv=$!
 sleep 0.5
 out=$(bash "$S/dot" sessions restart </dev/null)

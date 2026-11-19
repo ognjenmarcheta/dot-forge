@@ -19,6 +19,7 @@
 --     persistent_sessions = false,                 -- default true
 --     wayland = true,                              -- Linux; default: XWayland
 --     project_colors = { ["kaine-forge"] = "#f5a97f" },
+--     glass = true,                                -- frosted window; default: macOS/KDE on
 --   }
 
 local wezterm = require("wezterm")
@@ -360,6 +361,7 @@ end
 --     (machine.lua: night = false turns it off, night_hours = {22, 7})
 
 local base_background -- config.background as written in config.lua (set in apply)
+local base_window_frame
 local base_font_size
 
 local function is_night()
@@ -368,6 +370,27 @@ local function is_night()
     local h = tonumber(os.date("%H"))
     if from > to then return h >= from or h < to end
     return h >= from and h < to
+end
+
+-- Cursor colour = what state you're in (the active pane decides):
+--   orange  Alt+q leader is waiting for the next key
+--   red     the last command failed (until you run the next one)
+--   purple  Claude Code is working in this pane
+--   green   otherwise
+wezterm.GLOBAL.failed = wezterm.GLOBAL.failed or {}
+local function cursor_color(window, pane)
+    if window:leader_is_active() then return "#f5a97f" end
+    local id = tostring(pane:pane_id())
+    if wezterm.GLOBAL.failed[id] then return "#ed8796" end
+    local agent = wezterm.GLOBAL.agents and wezterm.GLOBAL.agents[id]
+    if agent and agent.state == "working" then return "#c6a0f6" end
+    return "#a6da95"
+end
+
+-- Tab bar background: a light tint of the project's colour
+function M.bar_color(color)
+    local base = (base_colors and base_colors.tab_bar and base_colors.tab_bar.background) or "#1f2330"
+    return color and blend(color, base, 0.12) or base
 end
 
 local function compose(window, pane)
@@ -379,7 +402,9 @@ local function compose(window, pane)
     local night = is_night()
     local share = M.sharing()
     if share and not M.share_allows(cwd_of(pane:get_current_working_dir())) then color = nil end
+    local cursor = cursor_color(window, pane)
     local sig = (color or "-") .. (flash and "|flash" or "") .. (night and "|night" or "") .. (share and "|share" or "")
+        .. "|" .. cursor
     if wezterm.GLOBAL.applied[wid] == sig then return end
     wezterm.GLOBAL.applied[wid] = sig
 
@@ -387,8 +412,30 @@ local function compose(window, pane)
     local base_bg = (base_colors and base_colors.tab_bar and base_colors.tab_bar.background) or "#1f2330"
     local colors = copy(base_colors) or {}
     colors.tab_bar = colors.tab_bar or {}
-    colors.tab_bar.background = color and blend(color, base_bg, 0.22) or base_bg
+    local bar = M.bar_color(color)
+    colors.tab_bar.background = bar
+    -- the + button: no box of its own, just a glyph on the bar
+    colors.tab_bar.new_tab = { bg_color = bar, fg_color = "#8087a2" }
+    colors.tab_bar.new_tab_hover = { bg_color = bar, fg_color = "#cad3f5", intensity = "Bold" }
+    -- cursor: green / orange leader / red failed / purple agent working
+    colors.cursor_bg = cursor
+    colors.cursor_border = cursor
+    colors.cursor_fg = "#1e2030"
+    -- divider between splits and a thin window edge in the project's colour
+    colors.split = color or "#494d64"
     overrides.colors = colors
+    colors.tab_bar.inactive_tab_edge = bar
+    -- window_frame overrides replace the whole table: start from config.lua's
+    local frame = copy(base_window_frame) or {}
+    local edge = color and "2px" or "0px"
+    local edge_color = color or base_bg
+    frame.border_left_width, frame.border_right_width = edge, edge
+    frame.border_top_width, frame.border_bottom_width = edge, edge
+    frame.border_left_color, frame.border_right_color = edge_color, edge_color
+    frame.border_top_color, frame.border_bottom_color = edge_color, edge_color
+    -- the fancy tab bar's background
+    frame.active_titlebar_bg, frame.inactive_titlebar_bg = bar, bar
+    overrides.window_frame = frame
 
     if base_background then
         local bg = copy(base_background)
@@ -408,28 +455,32 @@ local function compose(window, pane)
     window:set_config_overrides(overrides)
 end
 
--- Called from update-status: project badge (+ applies the overrides above)
+-- Called from update-status: what sits left of the tabs (+ applies the
+-- overrides above): leader waiting, screen sharing, the active project.
+-- Plain coloured text, no background: the fancy tab bar draws status text
+-- taller than the tabs, so a filled badge can't line up with them.
 function M.project_status(window, pane)
     pcall(compose, window, pane)
     local share = M.sharing()
-    if share then
-        return {
-            { Background = { Color = "#ed8796" } },
-            { Foreground = { Color = "#1e2030" } },
-            { Attribute = { Intensity = "Bold" } },
-            { Text = " ● SHARING · " .. (share.label or "") .. " " },
-            "ResetAttributes",
-        }
-    end
     local name, color = M.project(pane:get_current_working_dir())
-    if not name then return {} end
-    return {
-        { Background = { Color = color } },
-        { Foreground = { Color = "#1e2030" } },
-        { Attribute = { Intensity = "Bold" } },
-        { Text = " " .. name .. " " },
-        "ResetAttributes",
-    }
+    if share and not M.share_allows(cwd_of(pane:get_current_working_dir())) then name, color = nil, nil end
+    local out = {}
+    local function add(fg, text)
+        table.insert(out, { Foreground = { Color = fg } })
+        table.insert(out, { Attribute = { Intensity = "Bold" } })
+        table.insert(out, { Text = text .. "   " })
+        table.insert(out, "ResetAttributes")
+    end
+    if window:leader_is_active() then
+        add("#f5a97f", wezterm.nerdfonts.md_keyboard .. " leader")
+    end
+    if share then
+        add("#ed8796", "● SHARING · " .. (share.label or ""))
+    end
+    if name then
+        add(color, wezterm.nerdfonts.dev_git .. " " .. name)
+    end
+    return out
 end
 
 local function flash_failure(window)
@@ -775,6 +826,8 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
             msg = (msg ~= "" and msg) or (prev and prev.msg) or "",
             since = (prev and prev.state == state) and prev.since or os.time(),
         }
+        local ap = window:active_pane()
+        if ap then pcall(compose, window, ap) end -- purple cursor while it works
         if state == "working" or looking_at(window, pane) then
             wezterm.GLOBAL.agent[id] = nil
             return
@@ -793,7 +846,14 @@ wezterm.on("user-var-changed", function(window, pane, name, value)
             if ap then pcall(compose, gw, ap) end
         end
     elseif name == "dot_fail" then
+        wezterm.GLOBAL.failed[tostring(pane:pane_id())] = true
         flash_failure(window)
+    elseif name == "dot_prog" then
+        -- a new command started: the red "last one failed" cursor is over
+        if value ~= "" then
+            wezterm.GLOBAL.failed[tostring(pane:pane_id())] = nil
+            pcall(compose, window, window:active_pane() or pane)
+        end
     elseif name == "dot_open" then
         if value ~= "" then open_project(window, pane, value) end
     elseif name == "dot_done" then
@@ -1066,8 +1126,29 @@ end)
 
 -- ---------------------------------------------------- apply -----
 
+-- Frosted glass: a translucent dark tint over the blurred desktop instead of
+-- the photo. On by default where the system can blur behind a window (macOS,
+-- KDE). Stock GNOME can't, so Linux keeps the photo unless machine.lua says
+-- glass = true (pair it with the "Blur my Shell" extension for the blur).
+local function use_glass()
+    if machine.glass ~= nil then return machine.glass == true end
+    if wezterm.target_triple:find("darwin") then return true end
+    return (os.getenv("XDG_CURRENT_DESKTOP") or ""):find("KDE") ~= nil
+end
+
 function M.apply(config)
+    -- a config reload must re-apply the window overrides (colours, cursor…)
+    wezterm.GLOBAL.applied = {}
+    if use_glass() then
+        config.window_background_opacity = 0.82
+        config.macos_window_background_blur = 30
+        config.kde_window_background_blur = true
+        config.background = {
+            { source = { Color = "#1e2030" }, width = "100%", height = "100%", opacity = 0.82 },
+        }
+    end
     base_colors = copy(config.colors)
+    base_window_frame = copy(config.window_frame)
     base_background = copy(config.background)
     base_font_size = config.font_size
 

@@ -97,55 +97,65 @@ local function readjust_font_size(window, pane)
     end
 end
 
--- tmux status
+-- Left of the tabs: leader / sharing / project pills. Right: the status bar.
 wezterm.on("update-right-status", function(window, _)
-    require("features").clear_seen(window) -- you're looking at it: drop its ● marker
-    local SOLID_LEFT_ARROW = ""
-    local ARROW_FOREGROUND = { Foreground = { Color = "#c6a0f6" } }
-    local prefix = ""
-
-    if window:leader_is_active() then
-        prefix = " " .. utf8.char(0x1f30a) -- ocean wave
-        SOLID_LEFT_ARROW = utf8.char(0xe0b2)
-    end
-
-    if window:active_tab():tab_id() ~= 0 then
-        ARROW_FOREGROUND = { Foreground = { Color = "#1e2030" } }
-    end -- arrow color based on if tab is first pane
-
-    local left = {
-        { Background = { Color = "#b7bdf8" } },
-        { Text = prefix },
-        ARROW_FOREGROUND,
-        { Text = SOLID_LEFT_ARROW },
-    }
-    -- git project of the active pane: coloured badge + tinted tab bar
+    local features = require("features")
+    features.clear_seen(window) -- you're looking at it: drop its ● marker
     local pane = window:active_pane()
-    if pane then
-        for _, item in ipairs(require("features").project_status(window, pane)) do
-            table.insert(left, item)
-        end
-    end
-    window:set_left_status(wezterm.format(left))
+    window:set_left_status(pane and wezterm.format(features.project_status(window, pane)) or "")
     -- agents, temperatures, RAM, containers, CI runner
-    window:set_right_status(wezterm.format(require("features").right_status()))
+    window:set_right_status(wezterm.format(features.right_status()))
 end)
 
+-- Icon for what runs in a tab (looked up at load, so a bad name fails the config test)
+local nf = wezterm.nerdfonts
+local tab_icons = {
+    nvim = nf.custom_neovim, vim = nf.custom_vim, vi = nf.custom_vim,
+    node = nf.md_nodejs, npm = nf.md_nodejs, pnpm = nf.md_nodejs, npx = nf.md_nodejs,
+    bun = nf.dev_bun, deno = nf.md_language_typescript, tsx = nf.md_language_typescript,
+    python = nf.dev_python, python3 = nf.dev_python, uv = nf.dev_python, ipython = nf.dev_python,
+    cargo = nf.dev_rust, rustc = nf.dev_rust, go = nf.seti_go, ruby = nf.dev_ruby, java = nf.dev_java,
+    lua = nf.md_language_lua, docker = nf.md_docker, lazydocker = nf.md_docker,
+    kubectl = nf.md_kubernetes, k9s = nf.md_kubernetes,
+    git = nf.dev_git, lazygit = nf.dev_git, gh = nf.dev_git, tig = nf.dev_git,
+    ssh = nf.md_ssh, mosh = nf.md_ssh,
+    btop = nf.md_chart_areaspline, htop = nf.md_chart_areaspline, top = nf.md_chart_areaspline,
+    yazi = nf.md_folder, y = nf.md_folder,
+    man = nf.md_book_open_variant, less = nf.md_book_open_variant,
+    psql = nf.md_database, mysql = nf.md_database, sqlite3 = nf.md_database, redis = nf.md_database,
+    claude = nf.md_robot, codex = nf.md_robot, opencode = nf.md_robot, ai = nf.md_robot,
+    adb = nf.md_android,
+    zsh = nf.dev_terminal, bash = nf.dev_terminal, fish = nf.dev_terminal, sh = nf.dev_terminal,
+}
+local function tab_icon(pane)
+    local prog = pane.foreground_process_name or ""
+    prog = prog:match("([^/\\]+)$") or ""
+    prog = prog:gsub("%.exe$", "")
+    -- node scripts (claude, codex…) show up as "node": the title knows better
+    local title_word = ((pane.title or ""):match("^[^%w]*(%w[%w%-]*)") or ""):lower()
+    if (prog == "" or prog == "node") and tab_icons[title_word] then prog = title_word end
+    return tab_icons[prog:lower()] or tab_icons[title_word] or nf.dev_terminal
+end
+
+-- Tabs:  icon 0: title ×  — lavender (active), orange (Claude waiting),
+-- green (Claude done) or grey; an inactive tab's icon is drawn in its
+-- project's colour.
 wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_width)
     local index = tab.tab_index
     -- a name you gave the tab (palette → Rename tab, project tabs) wins
     local title = (tab.tab_title ~= "" and tab.tab_title) or tab.active_pane.title or "shell"
     -- Claude Code waiting (●) / finished (✓) in this tab
-    local marker = require("features").tab_marker(tab.tab_id)
-    local prefix = string.format(" %d: ", index)
+    local features = require("features")
+    local marker = features.tab_marker(tab.tab_id)
+    local icon = tab_icon(tab.active_pane)
+    local prefix = string.format("%s %d: ", icon, index)
     if marker == "waiting" then
-        prefix = string.format(" %d: ● ", index)
+        prefix = string.format("%s %d: ● ", icon, index)
     elseif marker == "done" then
-        prefix = string.format(" %d: ✓ ", index)
+        prefix = string.format("%s %d: ✓ ", icon, index)
     end
-    local suffix = " "
-    local available_width = math.max(max_width - #prefix - #suffix, 0)
-    local label = truncate_title(title, available_width)
+    local used = wezterm.column_width(prefix) + 2 -- + padding either side
+    local label = truncate_title(title, math.max(max_width - used, 0))
 
     local bg = "#363a4f"
     local fg = "#cad3f5"
@@ -163,20 +173,24 @@ wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_wid
         bg = "#494d64"
     end
 
-    -- thin stripe in the tab's project colour
-    local features = require("features")
     local _, project_color = features.project(tab.active_pane.current_working_dir)
     -- sharing your screen: tabs of other projects show no name
     if features.sharing() and not features.share_allows(features.cwd_path(tab.active_pane.current_working_dir)) then
         label = "•••"
         project_color = nil
     end
+    -- inactive tabs show their project in the icon's colour. The fancy tab
+    -- bar colours the whole tab (and its × button) from the first cell.
+    local icon_fg = (not tab.is_active and project_color) or fg
+    -- the first cell sets the tab's colours, × included: keep it plain fg
     return {
         { Background = { Color = bg } },
-        { Foreground = { Color = project_color or bg } },
-        { Text = "▌" },
         { Foreground = { Color = fg } },
-        { Text = prefix:sub(2) .. label .. suffix },
+        { Text = " " },
+        { Foreground = { Color = icon_fg } },
+        { Text = icon .. " " },
+        { Foreground = { Color = fg } },
+        { Text = prefix:sub(#icon + 2) .. label .. " " },
     }
 end)
 

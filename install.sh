@@ -629,22 +629,26 @@ EOF
 
 install_nerd_font() {
     # JetBrains Mono with Nerd Font icons: eza / yazi / Neovim icons in terminals
-    # and editors other than WezTerm (WezTerm ships its own copy of the symbols).
-    # macOS: the Brewfile cask. Linux: the official release into ~/.local/share/fonts.
+    # and editors other than WezTerm (WezTerm ships its own copy of the symbols),
+    # plus Victor Mono for WezTerm's cursive italics.
+    # macOS: the Brewfile casks. Linux: the official releases into ~/.local/share/fonts.
     [ "$OS" = Linux ] || return 0
     [ "$IN_CI" -eq 1 ] && return 0
-    local dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts/JetBrainsMonoNerdFont"
-    if ls "$dir"/*.ttf >/dev/null 2>&1 && [ "$UPGRADE" -eq 0 ]; then return 0; fi
-    step "Nerd Font (JetBrains Mono, for icons outside WezTerm)"
-    local tmp; tmp="$(mktemp -d)"
-    if curl -fsSL -o "$tmp/font.tar.xz" "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.tar.xz" \
-        && mkdir -p "$dir" && tar -xJf "$tmp/font.tar.xz" -C "$dir" --wildcards '*.ttf' 2>/dev/null; then
-        have fc-cache && fc-cache -f "$dir" >/dev/null 2>&1
-        ok "JetBrainsMono Nerd Font -> $(tilde "$dir")"
-    else
-        warn "Nerd Font download failed — icons outside WezTerm may show as boxes (re-run install.sh)"
-    fi
-    rm -rf "$tmp"
+    local name dir tmp
+    for name in JetBrainsMono VictorMono; do
+        dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts/${name}NerdFont"
+        if ls "$dir"/*.ttf >/dev/null 2>&1 && [ "$UPGRADE" -eq 0 ]; then continue; fi
+        step "Nerd Font ($name)"
+        tmp="$(mktemp -d)"
+        if curl -fsSL -o "$tmp/font.tar.xz" "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/$name.tar.xz" \
+            && mkdir -p "$dir" && tar -xJf "$tmp/font.tar.xz" -C "$dir" --wildcards '*.ttf' 2>/dev/null; then
+            have fc-cache && fc-cache -f "$dir" >/dev/null 2>&1
+            ok "$name Nerd Font -> $(tilde "$dir")"
+        else
+            warn "$name Nerd Font download failed — re-run install.sh"
+        fi
+        rm -rf "$tmp"
+    done
 }
 
 setup_caddy() {
