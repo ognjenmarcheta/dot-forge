@@ -258,3 +258,9 @@ against the real Kaine Forge template weekly and when `dot-new` changes.
 
 Logins and tokens (`gh/hosts.yml`, Copilot, OpenCode `service.json`, container
 registry auth), SSH keys, `~/.gitconfig`, and the contents of `~/.agents/skills`.
+
+## License
+
+Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Security
+reports: [`SECURITY.md`](SECURITY.md). How to change things:
+[`CONTRIBUTING.md`](CONTRIBUTING.md).

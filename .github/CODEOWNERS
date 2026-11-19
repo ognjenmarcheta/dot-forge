@@ -1,0 +1,4 @@
+# GitHub requests a review from the owner of every changed path.
+# Docs: https://docs.github.com/articles/about-code-owners
+
+*                       @ognjenmarcheta
