@@ -1,0 +1,46 @@
+# Tips for `dot tip` and the startup card. One per line, tab-separated:
+#   id    used-when (extended regex on your shell history, or - when it can't be seen there)    tip
+# A tip whose regex matches something you ran in the last 90 days counts as
+# known and is skipped. Keyboard shortcuts can't be seen in history (-): they
+# come round in turn.
+recall	^dot recall	dot recall 5173 finds anything a command printed, even in a tab you closed (--ai "what port did the api use?")
+night	^dot night	dot night "api: fix the flaky test" queues a task; Claude works on it at 01:30 in its own worktree
+habits	^dot habits	dot habits turns the long commands you keep typing into short aliases
+standup	^dot standup	dot standup writes yesterday / today / blockers from your commits, PRs and notes — copied, ready to paste
+note	^dot note	dot note "client approved the mockups" — notes end up in standups and client updates
+update	^dot update	dot update acme writes this week's client update from the work in their repos
+share	^dot mode share	dot mode share acme before a client call: bigger font, other projects hidden, no notifications
+invite	^dot invite	dot invite gives someone a read-only browser link to a terminal tab (QR code included)
+try	^dot try	dot try owner/repo opens any repo in a locked-down container, with a tour and a red-flag check
+janitor	^dot janitor	dot janitor frees the disk space old projects sit on (node_modules, caches, old images)
+savegame	^dot (save|load)-game	dot save-game NAME keeps a workspace's tabs, splits and programs — dot load-game NAME after a reboot
+new	^dot new	dot new portal --client acme starts a project from Kaine Forge: repo, CI, AI setup, workspace
+ports	^dot ports	dot ports shows what's listening and which project it belongs to — dot ports kill 5173
+name	^dot name	dot name gives this repo's dev server https://<repo>.localhost with a trusted certificate
+wrapped	^dot (wrapped|credits)	dot wrapped: your week as a card — time per project, top commands, agent hours
+sync	^dot sync	dot sync-history shares your shell history between your machines (end-to-end encrypted)
+evolve	^dot evolve	dot evolve: once a week Claude fixes the dotfiles where you struggled and opens a draft PR
+aifix	^ai fix	right after a command fails, ai fix reads the error on screen and suggests the fix
+aiexplain	^ai explain	ai explain 'tar -xzvf x.tgz' explains any command, flag by flag
+ai	^ai [a-z]	ai "find files over 100MB here" turns plain English into a shell command (asks before running)
+rgf	^rgf 	rgf "TODO" searches every file and opens the hit in Neovim at that line
+yazi	^y$	y opens the yazi file manager; quit it and your shell is in the folder you were looking at
+z	^z 	z api jumps to the folder you use most that matches "api" — z <Tab> shows a menu
+tldr	^tldr 	tldr tar: the five examples you need instead of the whole man page
+just	^just	a justfile in a repo + just = the project's commands with Tab completion
+xh	^xh 	xh POST api.dev/users name=ana — curl for APIs, readable both ways
+fx	(^| )fx	… | fx opens JSON in an explorer you can fold and search
+gitundo	git undo	git undo takes back the last commit and keeps its changes
+gitrecent	git recent	git recent lists the branches you touched lately, newest first
+lazygit	^lazygit	lazygit: stage lines, split commits and rebase with the keyboard
+quickselect	-	Leader Space (Alt+q, Space) labels every URL, path and hash on screen — two keys copy one
+blocks	-	Shift+↑ / Shift+↓ jump between commands; Leader y copies the last command's output
+radar	-	Leader a: every Claude Code session, which ones wait for you, and a jump there
+pair	-	Leader ? opens Claude in a side pane that already knows the folder, git state and last output
+projects	-	Leader p opens a project from ~/Github as its own workspace (shell, nvim, lazygit)
+palette	-	Ctrl+Shift+P: command palette — projects, rename tab, save game, edit dotfiles…
+navi	-	Ctrl+G: saved commands with blanks to fill in (adb, docker, kubectl, git…)
+voice	-	Alt+V, speak, any key: push-to-talk turns what you said into an ai command (speech stays local)
+fixf1	-	after a typo, a 💡 fix shows under the prompt — F1 puts it on the command line
+emoji	-	Ctrl+Shift+U: emoji and symbol picker
+history	-	Ctrl+R searches your whole shell history; → accepts the grey suggestion as you type

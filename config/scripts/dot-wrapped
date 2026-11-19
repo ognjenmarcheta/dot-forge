@@ -1,0 +1,498 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""dot wrapped / dot credits — your week (or day) at the terminal, as a card.
+
+  dot wrapped                  the last 7 days: active time, top commands, time per
+                               project, commits, agents, night shift, typos fixed
+  dot wrapped --since "nov 1"  from a date instead (also: --days 14)
+  dot wrapped --json           the numbers, for scripts
+  dot credits                  the same for today so far (--yesterday)
+  dot credits --line           one line ("🎬 yesterday · 6h 10m · 3 projects · …");
+                               prints nothing when there was no activity
+
+Everything is read on this machine: atuin history (what ran, where, how long),
+git log of your repos under ~/Github, the Claude Code hook log
+(~/.local/share/dotfiles/agents.log) and the night-shift queue. Nothing is sent
+anywhere. In screen-share mode (dot mode share) names of other projects show •••.
+
+Active time = 5-minute slots with at least one command. "Typos fixed" is an
+estimate: a failed command followed within a minute, in the same folder, by a
+working one whose first word is a near spelling of the failed one.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local" / "share")) / "dotfiles"
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state")) / "dotfiles"
+PROJECTS = Path(os.environ.get("DOT_PROJECTS", HOME / "Github"))
+AGENTS_LOG = DATA / "agents.log"
+NIGHT_QUEUE = DATA / "night" / "queue.json"
+SLOT = 300                       # 5-minute activity slots
+TWO_WORD = {"git", "dot", "pnpm", "npm", "docker", "just", "cargo", "bun", "yarn", "gh", "kubectl", "uv", "mise", "brew"}
+PALETTE = ["#f5a97f", "#a6da95", "#8aadf4", "#c6a0f6", "#f5bde6",
+           "#eed49f", "#8bd5ca", "#ed8796", "#91d7e3", "#f0c6c6"]
+HIDDEN = "•••"
+
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def col(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if COLOR else s
+
+
+def rgb(hexc: str, s: str) -> str:
+    if not COLOR:
+        return s
+    h = hexc.lstrip("#")
+    return f"\033[38;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m{s}\033[0m"
+
+
+def project_color(name: str) -> str:
+    """Same colour WezTerm gives the project (features.lua color_for)."""
+    h = 0
+    for ch in name.encode():
+        h = (h * 31 + ch) % 2147483647
+    return PALETTE[h % len(PALETTE)]
+
+
+# ------------------------------------------------------------------ history ---
+
+def parse_duration(s: str) -> float:
+    """atuin durations: "43ms", "19s", "1m 5s", "2h 3m" → seconds."""
+    total = 0.0
+    for num, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(ns|us|µs|ms|s|m|h|d)", s or ""):
+        total += float(num) * {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    return total
+
+
+def history(start: dt.datetime, end: dt.datetime) -> list[dict]:
+    """Commands between start and end: dicts with t (datetime), dur, exit, dir, cmd."""
+    fmt = "{time}\t{duration}\t{exit}\t{directory}\t{command}"
+    if os.environ.get("DOT_WRAPPED_FROM"):           # tests: rows in the format above, \0-separated
+        raw = Path(os.environ["DOT_WRAPPED_FROM"]).read_text()
+    else:
+        if not shutil.which("atuin"):
+            return []
+        env = {**os.environ}
+        env.setdefault("ATUIN_SESSION", "dot-wrapped")
+        base = ["atuin", "search", "--after", start.strftime("%Y-%m-%d %H:%M:%S"),
+                "--before", end.strftime("%Y-%m-%d %H:%M:%S"), "--timezone", "local",
+                "--filter-mode", "global", "--format", fmt, "--print0", "--limit", "200000"]
+        raw = ""
+        # newest atuin: keep duplicates (we count them) and leave out commands agents ran
+        for extra in (["--include-duplicates", "--author", "$all-user"], ["--include-duplicates"], []):
+            try:
+                r = subprocess.run(base + extra, capture_output=True, text=True, env=env, timeout=20)
+            except (OSError, subprocess.TimeoutExpired):
+                return []
+            if r.returncode == 0:
+                raw = r.stdout
+                break
+    rows = []
+    for rec in raw.split("\0"):
+        rec = rec.strip("\n")
+        parts = rec.split("\t", 4)
+        if len(parts) < 5:
+            continue
+        try:
+            t = dt.datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if not (start <= t < end):
+            continue
+        try:
+            code = int(parts[2])
+        except ValueError:
+            code = 0
+        rows.append({"t": t, "dur": parse_duration(parts[1]), "exit": code, "dir": parts[3], "cmd": parts[4].strip()})
+    rows.sort(key=lambda r: r["t"])
+    return rows
+
+
+def project_of(path: str) -> str | None:
+    """First folder under ~/Github (worktrees under .night/.worktrees count as their repo)."""
+    try:
+        rel = Path(path).resolve().relative_to(PROJECTS.resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if not parts:
+        return None
+    if parts[0] in (".night", ".worktrees") and len(parts) > 1:
+        return re.sub(r"-[0-9a-z]{4,}$", "", parts[1]) or None
+    return None if parts[0].startswith(".") else parts[0]
+
+
+def cmd_key(cmd: str) -> str:
+    # `clear; ai …` / `cd x && pnpm dev`: count the real command, not `clear`/`cd`
+    segs = [x.strip() for x in re.split(r";|&&|\|\|", cmd) if x.strip()]
+    if len(segs) > 1 and segs[0].split()[0] in ("clear", "cd", "z"):
+        segs = segs[1:]
+    words = (segs[0] if segs else "").split()
+    while words and ("=" in words[0] and not words[0].startswith("=")):   # FOO=1 cmd
+        words = words[1:]
+    if words and words[0] in ("sudo", "time", "command", "builtin", "exec", "noglob"):
+        words = words[1:]
+    if not words:
+        return ""
+    first = os.path.basename(words[0])
+    if first in TWO_WORD and len(words) > 1 and not words[1].startswith("-"):
+        return f"{first} {words[1]}"
+    return first
+
+
+def lev(a: str, b: str) -> int:
+    if abs(len(a) - len(b)) > 2:
+        return 3
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def typos_fixed(rows: list[dict]) -> int:
+    n = 0
+    for a, b in zip(rows, rows[1:]):
+        if a["exit"] == 0 or b["exit"] != 0 or a["dir"] != b["dir"]:
+            continue
+        if (b["t"] - a["t"]).total_seconds() > 60:
+            continue
+        wa, wb = (a["cmd"].split() or [""])[0], (b["cmd"].split() or [""])[0]
+        if wa and wb and wa != wb and lev(wa, wb) <= 2:
+            n += 1
+    return n
+
+
+# ------------------------------------------------------------ other sources ---
+
+def git_email() -> str:
+    try:
+        return subprocess.run(["git", "config", "--get", "user.email"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def commits(start: dt.datetime, end: dt.datetime) -> dict[str, int]:
+    email = git_email()
+    out: dict[str, int] = {}
+    if not email or not PROJECTS.is_dir():
+        return out
+    # A commit counts once, on the day you wrote it: by author date (a rebase
+    # gives old commits a new committer date), and the same author time +
+    # subject on several branches, rebased copies or a second clone is one.
+    a, b = int(start.timestamp()), int(end.timestamp())
+    seen: set[tuple[str, str]] = set()
+    for repo in sorted(PROJECTS.iterdir()):
+        if repo.name.startswith(".") or not (repo / ".git").exists():
+            continue
+        try:
+            # --since on committer date only narrows the walk; author date decides
+            r = subprocess.run(["git", "-C", str(repo), "log", "--all", "--no-merges", "--format=%at%x09%s",
+                                f"--since={(start - dt.timedelta(days=30)).isoformat()}",
+                                f"--author={email}"], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        n = 0
+        for line in r.stdout.splitlines():
+            at, _, subject = line.partition("\t")
+            if not at.isdigit() or not (a <= int(at) < b) or (at, subject) in seen:
+                continue
+            seen.add((at, subject))
+            n += 1
+        if n:
+            out[repo.name] = n
+    return out
+
+
+def agents(start: dt.datetime, end: dt.datetime) -> dict:
+    """Prompts sent to Claude Code, sessions, and roughly how long agents worked."""
+    a, b = start.timestamp(), end.timestamp()
+    prompts, sessions, secs = 0, set(), 0.0
+    open_at: dict[str, float] = {}
+    try:
+        lines = AGENTS_LOG.read_text(errors="ignore").splitlines()
+    except OSError:
+        lines = []
+    events = []
+    for line in lines:
+        p = line.split("\t")
+        if len(p) < 4:
+            continue
+        try:
+            events.append((float(p[0]), p[1], p[2], p[3]))
+        except ValueError:
+            continue
+    events.sort()
+    for ts, state, _proj, sid in events:
+        if state == "working":
+            if a <= ts < b:
+                prompts += 1
+                sessions.add(sid)
+            open_at.setdefault(sid, ts)
+        elif state in ("done", "waiting") and sid in open_at:
+            s0 = open_at.pop(sid)
+            lo, hi = max(s0, a), min(ts, b, s0 + 7200)
+            if hi > lo:
+                secs += hi - lo
+                sessions.add(sid)
+    return {"prompts": prompts, "sessions": len(sessions), "seconds": int(secs)}
+
+
+def night(start: dt.datetime, end: dt.datetime) -> int:
+    try:
+        items = json.loads(NIGHT_QUEUE.read_text())
+    except (OSError, ValueError):
+        return 0
+    n = 0
+    for it in items if isinstance(items, list) else []:
+        if it.get("state") not in ("ready", "pr", "cleaned", "needs-you"):
+            continue
+        try:
+            fin = dt.datetime.fromisoformat(it.get("finished") or "")
+        except ValueError:
+            continue
+        if start <= fin < end and it.get("state") != "needs-you":
+            n += 1
+    return n
+
+
+def shared_repo() -> str | None:
+    """In share mode: the one project name that may show (the current repo), else None."""
+    try:
+        if "mode=share" not in (STATE / "mode").read_text():
+            return None
+    except OSError:
+        return None
+    try:
+        root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        root = ""
+    return Path(root).name if root else ""
+
+
+# ------------------------------------------------------------------- stats ---
+
+def stats(start: dt.datetime, end: dt.datetime, with_commits: bool = True) -> dict:
+    rows = history(start, end)
+    slots = {int(r["t"].timestamp()) // SLOT for r in rows}
+    per_proj: dict[str, set] = defaultdict(set)
+    for r in rows:
+        p = project_of(r["dir"])
+        if p:
+            per_proj[p].add(int(r["t"].timestamp()) // SLOT)
+    top = Counter(k for k in (cmd_key(r["cmd"]) for r in rows) if k)
+    longest = max(rows, key=lambda r: r["dur"], default=None)
+    days = Counter(r["t"].strftime("%A") for r in rows)
+    hours = Counter(r["t"].hour for r in rows)
+    com = commits(start, end) if with_commits else {}
+    s = {
+        "from": start.isoformat(timespec="minutes"),
+        "to": end.isoformat(timespec="minutes"),
+        "commands": len(rows),
+        "failed": sum(1 for r in rows if r["exit"] != 0),
+        "active_seconds": len(slots) * SLOT,
+        "projects": dict(sorted(((p, len(v) * SLOT) for p, v in per_proj.items()), key=lambda kv: -kv[1])),
+        "top_commands": top.most_common(10),
+        "commits": dict(sorted(com.items(), key=lambda kv: -kv[1])),
+        "commits_total": sum(com.values()),
+        "agents": agents(start, end),
+        "night_tasks": night(start, end),
+        "typos_fixed": typos_fixed(rows),
+        "longest": {"cmd": longest["cmd"][:120], "seconds": int(longest["dur"])} if longest and longest["dur"] >= 1 else None,
+        "busiest_day": days.most_common(1)[0][0] if days else None,
+        "busiest_hour": hours.most_common(1)[0][0] if hours else None,
+    }
+    show = shared_repo()
+    if show is not None:
+        s["hidden"] = True
+        hide = lambda d: {(k if k == show else f"{HIDDEN}{i}"): v for i, (k, v) in enumerate(d.items(), 1)}
+        s["projects"], s["commits"] = hide(s["projects"]), hide(s["commits"])
+        s["longest"] = None
+        s["top_commands"] = [(k, n) for k, n in s["top_commands"]]
+    return s
+
+
+def hm(secs: int) -> str:
+    h, m = divmod(int(secs) // 60, 60)
+    if h and m:
+        return f"{h}h {m}m"
+    return f"{h}h" if h else f"{m}m"
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+# ----------------------------------------------------------------- output ---
+
+def name_col(name: str, width: int) -> str:
+    shown = name if len(name) <= width else name[: width - 1] + "…"
+    pad = shown.ljust(width)
+    if name.startswith(HIDDEN):
+        return col("2", HIDDEN.ljust(width))
+    return rgb(project_color(name), pad)
+
+
+def bar(frac: float, width: int, color: str) -> str:
+    cells = frac * width
+    full = int(cells)
+    part = " ▏▎▍▌▋▊▉"[int((cells - full) * 8)]
+    s = "█" * full + (part if full < width and part != " " else "")
+    return rgb(color, s) if not color.startswith(HIDDEN) else col("2", s)
+
+
+def card(s: dict, title: str) -> str:
+    out = []
+    w = 64
+    out.append(rgb("#8aadf4", "╭─ ") + col("1", title) + rgb("#8aadf4", " " + "─" * max(2, w - len(title) - 4) + "╮"))
+    head = [f"⏱  {col('1', hm(s['active_seconds']))} active", f"⌨  {col('1', str(s['commands']))} commands"]
+    if s["commits_total"]:
+        head.append(f"✎ {col('1', str(s['commits_total']))} commits")
+    out.append("  " + "   ".join(head))
+    ag = s["agents"]
+    extras = []
+    if ag["prompts"]:
+        extras.append(f"🤖 {plural(ag['prompts'], 'prompt')} to agents, ~{hm(ag['seconds'])} of agent work")
+    if s["night_tasks"]:
+        extras.append(f"🌙 {plural(s['night_tasks'], 'night-shift task')}")
+    if s["typos_fixed"]:
+        extras.append(f"💡 {plural(s['typos_fixed'], 'typo')} fixed")
+    for i in range(0, len(extras), 2):
+        out.append("  " + "   ".join(extras[i:i + 2]))
+
+    if s["projects"]:
+        out.append("")
+        out.append(col("2", "  time per project"))
+        top = max(s["projects"].values())
+        for name, secs in list(s["projects"].items())[:6]:
+            color = name if name.startswith(HIDDEN) else project_color(name)
+            c = s["commits"].get(name)
+            tail = f"  {hm(secs):>7}" + (col("2", f"  {plural(c, 'commit')}") if c else "")
+            out.append(f"  {name_col(name, 16)} {bar(secs / top, 26, color):<26}{tail}")
+        other = {k: v for k, v in s["commits"].items() if k not in s["projects"]}
+        if other:
+            out.append(col("2", "  also committed to: " + ", ".join(f"{HIDDEN if k.startswith(HIDDEN) else k} ({v})" for k, v in list(other.items())[:4])))
+
+    if s["top_commands"]:
+        out.append("")
+        out.append(col("2", "  top commands"))
+        items = [f"{n:>4} {k[:20]:<20}" for k, n in s["top_commands"]]
+        for i in range(0, len(items), 2):
+            out.append("  " + "  ".join(items[i:i + 2]).rstrip())
+
+    facts = []
+    if s["busiest_day"] and s["busiest_hour"] is not None:
+        facts.append(f"busiest: {s['busiest_day']} around {s['busiest_hour']:02d}:00")
+    if s["longest"]:
+        cmd = s["longest"]["cmd"]
+        facts.append(f"longest: {cmd[:34] + ('…' if len(cmd) > 34 else '')} ({hm(s['longest']['seconds']) if s['longest']['seconds'] >= 60 else str(s['longest']['seconds']) + 's'})")
+    if facts:
+        out.append("")
+        for f in facts:
+            out.append(col("2", "  " + f))
+    if s.get("hidden"):
+        out.append(col("2", "  sharing: other projects' names hidden"))
+    out.append(rgb("#8aadf4", "╰" + "─" * (w - 1) + "╯"))
+    return "\n".join(out)
+
+
+def line(s: dict, label: str) -> str:
+    if not s["commands"] and not s["commits_total"] and not s["agents"]["prompts"]:
+        return ""
+    parts = [f"🎬 {label}"]
+    if s["active_seconds"]:
+        parts.append(hm(s["active_seconds"]))
+    if s["projects"]:
+        parts.append(plural(len(s["projects"]), "project"))
+    if s["commits_total"]:
+        parts.append(plural(s["commits_total"], "commit"))
+    if s["agents"]["prompts"]:
+        parts.append(plural(s["agents"]["sessions"] or 1, "agent"))
+    if s["night_tasks"]:
+        parts.append(plural(s["night_tasks"], "night task"))
+    if s["typos_fixed"]:
+        parts.append(f"{plural(s['typos_fixed'], 'typo')} fixed")
+    return " · ".join(parts)
+
+
+def parse_since(text: str) -> dt.datetime:
+    text = text.strip()
+    now = dt.datetime.now()
+    for fmt in ("%Y-%m-%d", "%b %d", "%B %d", "%d %b", "%d %B", "%b %d %Y", "%d.%m.%Y", "%d.%m."):
+        try:
+            d = dt.datetime.strptime(text.title() if "%b" in fmt or "%B" in fmt else text, fmt)
+        except ValueError:
+            continue
+        if "%Y" not in fmt:
+            d = d.replace(year=now.year)
+            if d > now:
+                d = d.replace(year=now.year - 1)
+        return d
+    if text in ("yesterday",):
+        return (now - dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    m = re.fullmatch(r"(\d+)\s*d(ays?)?", text)
+    if m:
+        return now - dt.timedelta(days=int(m.group(1)))
+    sys.exit(f"dot wrapped: don't understand the date {text!r} (try \"nov 1\" or 2026-11-01)")
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    mode = "wrapped"
+    if argv and argv[0] in ("wrapped", "credits"):
+        mode, argv = argv[0], argv[1:]
+    ap = argparse.ArgumentParser(prog=f"dot {mode}", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true")
+    if mode == "wrapped":
+        ap.add_argument("--week", action="store_true", help="the last 7 days (default)")
+        ap.add_argument("--days", type=int, default=7)
+        ap.add_argument("--since", metavar="DATE")
+    else:
+        ap.add_argument("--yesterday", action="store_true")
+        ap.add_argument("--line", action="store_true", help="one line, nothing if there was no activity")
+    a = ap.parse_args(argv)
+    now = dt.datetime.now().replace(microsecond=0)
+    if mode == "wrapped":
+        start = parse_since(a.since) if a.since else now - dt.timedelta(days=a.days)
+        end, label = now, None
+        title = f"your week, wrapped · {start:%a %d %b} – {end:%a %d %b}" if not a.since else f"wrapped · since {start:%a %d %b}"
+    else:
+        midnight = now.replace(hour=0, minute=0, second=0)
+        if a.yesterday:
+            start, end, label = midnight - dt.timedelta(days=1), midnight, "yesterday"
+        else:
+            start, end, label = midnight, now + dt.timedelta(seconds=1), "today"
+        title = f"credits · {label} ({start:%a %d %b})"
+    s = stats(start, end)
+    if a.json:
+        print(json.dumps(s, indent=2, default=str))
+        return
+    if mode == "credits" and a.line:
+        text = line(s, label)
+        if text:
+            print(text)
+        return
+    if not s["commands"] and not s["commits_total"] and not s["agents"]["prompts"]:
+        print(f"nothing to show for {label or 'this period'} (atuin history empty?)")
+        return
+    print(card(s, title))
+
+
+if __name__ == "__main__":
+    main()

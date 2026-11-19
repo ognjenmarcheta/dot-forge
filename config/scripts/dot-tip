@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# dot tip — one tip a day about a feature of this setup you haven't used yet.
+#
+#   dot tip            today's tip (also on the startup card)
+#   dot tip next       another one (and it becomes today's)
+#   dot tip all        every tip; ✓ = you've used it in the last 90 days
+#   dot tip --refresh  work out which features you haven't used (the card's
+#                      background refresh runs this once a day)
+#
+# Tips: config/hello/tips.tsv. "Used" comes from your shell history (atuin's
+# last 90 days, plus ~/.zsh_history / ~/.bash_history); shortcuts that history
+# can't see take turns. A tip shown isn't repeated for 30 days unless every
+# other one has been.
+set -uo pipefail
+
+here="$(cd -- "$(dirname -- "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+tips="${DOT_TIPS:-$here/../hello/tips.tsv}"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/hello"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles"
+seen="$state/tips-seen"          # id TAB date shown
+used="$cache/tips-used"          # ids you've used (from --refresh)
+TAB="$(printf '\t')"
+mkdir -p "$cache" "$state"
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'; else G=""; D=""; R=""; fi
+
+ids() { grep -v '^#' "$tips" | grep -v '^$' | cut -f1; }
+text_of() { awk -F'\t' -v id="$1" '$1 == id { print $3; exit }' "$tips"; }
+
+refresh() {
+    local hist; hist="$(mktemp)"
+    if command -v atuin >/dev/null 2>&1; then
+        # atuin refuses to search without a session id (the shell normally sets one)
+        [ -n "${ATUIN_SESSION:-}" ] || ATUIN_SESSION="$(atuin uuid 2>/dev/null)"
+        export ATUIN_SESSION
+        local since
+        since="$(date -d '90 days ago' +%F 2>/dev/null || date -v-90d +%F)"
+        atuin search --after "$since" --cmd-only --limit 200000 2>/dev/null > "$hist" \
+            || atuin history list --cmd-only 2>/dev/null > "$hist"
+    fi
+    # plus the shells' own history files: atuin only knows what ran since it was set up
+    local f
+    for f in "${HISTFILE:-}" "$HOME/.zsh_history" "$HOME/.bash_history"; do
+        [ -n "$f" ] && [ -f "$f" ] && LC_ALL=C sed 's/^: [0-9]*:[0-9]*;//' "$f" >> "$hist"
+    done
+    local id re _t
+    : > "$used.tmp"
+    while IFS="$TAB" read -r id re _t; do
+        case "$id" in ''|'#'*) continue ;; esac
+        [ "$re" = - ] && continue
+        grep -Eq -- "$re" "$hist" 2>/dev/null && echo "$id" >> "$used.tmp"
+    done < "$tips"
+    mv "$used.tmp" "$used"
+    rm -f "$hist"
+    pick >/dev/null
+}
+
+# today's tip: the first unused one not shown in the last 30 days, in a
+# rotation that starts somewhere different each day
+pick() {
+    local today; today="$(date +%F)"
+    local current; current="$(sed -n 1p "$cache/tip-id" 2>/dev/null)"
+    # (a tip that has since left tips.tsv is picked again)
+    if [ "$(sed -n 2p "$cache/tip-id" 2>/dev/null)" = "$today" ] && [ -n "$current" ] && [ "${1:-}" != next ] \
+        && [ -n "$(text_of "$current")" ]; then
+        echo "$current"; return
+    fi
+    local cutoff; cutoff="$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)"
+    local all n start i id choice="" fallback=""
+    all="$(ids)"
+    n="$(printf '%s\n' "$all" | wc -l | tr -d ' ')"
+    start=$(( $(date +%j | sed 's/^0*//') % n ))
+    for (( i = 0; i < n; i++ )); do
+        id="$(printf '%s\n' "$all" | sed -n "$(( (start + i) % n + 1 ))p")"
+        grep -qx "$id" "$used" 2>/dev/null && continue
+        [ "$id" = "$current" ] && [ "${1:-}" = next ] && continue
+        [ -z "$fallback" ] && fallback="$id"
+        if ! awk -F'\t' -v id="$id" -v c="$cutoff" '$1 == id && $2 >= c { f = 1 } END { exit !f }' "$seen" 2>/dev/null; then
+            choice="$id"; break
+        fi
+    done
+    [ -n "$choice" ] || choice="$fallback"
+    [ -n "$choice" ] || choice="$(printf '%s\n' "$all" | sed -n "$(( start + 1 ))p")"   # you've used everything
+    printf '%s\t%s\n' "$choice" "$today" >> "$seen"
+    printf '%s\n%s\n' "$choice" "$today" > "$cache/tip-id"
+    text_of "$choice" > "$cache/tip"
+    echo "$choice"
+}
+
+case "${1:-}" in
+    "") id="$(pick)"; printf '💡 %s\n' "$(text_of "$id")" ;;
+    next) id="$(pick next)"; printf '💡 %s\n' "$(text_of "$id")" ;;
+    all|--all)
+        while IFS="$TAB" read -r id re t; do
+            case "$id" in ''|'#'*) continue ;; esac
+            if grep -qx "$id" "$used" 2>/dev/null; then printf '  %s✓%s %s\n' "$G" "$R" "$t"
+            else printf '  %s·%s %s\n' "$D" "$R" "$t"; fi
+        done < "$tips" ;;
+    --refresh) refresh ;;
+    -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) echo "dot tip: unknown option $1 (dot tip --help)" >&2; exit 1 ;;
+esac
