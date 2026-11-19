@@ -295,6 +295,10 @@ return {
 				desc = "terminal toggle",
 				mode = { "n", "t" },
 			},
+			-- same, without Fn (F12 needs it on a MacBook / 60% keyboard).
+			-- Ctrl+/ reaches Neovim as <C-_> in most terminals.
+			{ "<C-/>", function() Snacks.terminal.toggle() end, desc = "terminal toggle", mode = { "n", "t" } },
+			{ "<C-_>", function() Snacks.terminal.toggle() end, desc = "terminal toggle", mode = { "n", "t" } },
 		},
 	},
 }

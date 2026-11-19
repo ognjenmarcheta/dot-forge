@@ -87,7 +87,7 @@ Shell
   ll / lt             list with git status / tree   (entries are clickable)
   ai <request>        shell command from Claude    ai explain <cmd>
   ai fix              right after a failure: reads the error on screen, suggests a fix
-  F1                  use the 💡 fix suggested under the prompt after a typo (DOT_FIX=0 = off)
+  Ctrl+G (or F1)      use the 💡 fix suggested under the prompt after a typo (DOT_FIX=0 = off)
   Alt+V               push-to-talk: speak, press a key → ai "…" (speech stays on this machine)
   cd into a repo      after 3+ days away: welcome card (branch, PRs, CI, what others pushed)
   Ctrl+G              navi: saved commands with blanks to fill in (~/.config/navi/cheats)

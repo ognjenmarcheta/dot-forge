@@ -666,7 +666,7 @@ Available in `package.json` buffers:
 | `gJ`               | Smart join lines (treesitter-based via treesj)                                   |
 | `~`                | Swap function arguments (treesitter)                                             |
 | `gP`               | Print debug variable under cursor (printer.nvim)                                 |
-| `<F12>`            | Toggle terminal                                                                  |
+| `<F12>` / `<C-/>` | Toggle terminal                                                                  |
 | `SPC q`            | Toggle quickfix list                                                             |
 | `SPC ,` / `SPC .`  | Previous / next quickfix item                                                   |
 | `SPC y`            | Open Yazi file manager                                                           |

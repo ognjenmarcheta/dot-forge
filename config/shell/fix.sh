@@ -1,9 +1,10 @@
 # Self-healing typos: after a command fails with an obvious mistake, a dim
-# suggestion shows under the prompt a moment later — press F1 to put it on the
-# command line (it never runs by itself). Claude's fastest model, through your
+# suggestion shows under the prompt a moment later — press Ctrl+G (or F1) to put
+# it on the command line (it never runs by itself). Claude's fastest model, through your
 # subscription (dot-ai). Loaded by aliases.sh.
 #   DOT_FIX=0   turn it off
-# zsh: the suggestion appears on its own. bash: press F1 after a failure.
+# zsh: the suggestion appears on its own. bash: press Ctrl+G (or F1) after a failure.
+# Ctrl+G because F1 needs Fn on a MacBook and on 60% keyboards with no F-row.
 
 [ -n "${DOT_FIX_LOADED:-}" ] && return 0
 DOT_FIX_LOADED=1
@@ -69,13 +70,17 @@ if [ -n "${ZSH_VERSION:-}" ]; then
         _dot_fix_fd=""
         [[ -n "$line" ]] || return 0
         _dot_fix_suggestion="$line"
-        zle -M "💡 $line   (F1 to use it)"
+        zle -M "💡 $line   (Ctrl+G to use it)"
         zle -R
     }
     zle -N _dot_fix_ready
 
     _dot_fix_accept() {
-        [[ -n "$_dot_fix_suggestion" ]] || return 0
+        if [[ -z "$_dot_fix_suggestion" ]]; then
+            # no suggestion: Ctrl+G keeps its usual job (abort the line)
+            [[ "$KEYS" == $'\C-g' ]] && zle send-break
+            return 0
+        fi
         BUFFER="$_dot_fix_suggestion"
         CURSOR=${#BUFFER}
         _dot_fix_suggestion=""
@@ -84,6 +89,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     zle -N _dot_fix_accept
     bindkey '^[OP' _dot_fix_accept    # F1
     bindkey '^[[11~' _dot_fix_accept  # F1 (some terminals)
+    bindkey '^G' _dot_fix_accept      # Ctrl+G: no Fn needed
 
     autoload -Uz add-zsh-hook
     add-zsh-hook preexec _dot_fix_preexec
@@ -100,7 +106,7 @@ elif [ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]; then
         _dot_fix_cmd=""
         return $st
     }
-    # F1: ask now (takes a second or two) and put the fix on the command line
+    # Ctrl+G / F1: ask now (takes a second or two) and put the fix on the command line
     _dot_fix_accept_bash() {
         [ -n "$_dot_fix_failed" ] || return 0
         printf '\033[2m… asking Claude for a fix\033[0m\r' >/dev/tty
@@ -113,4 +119,5 @@ elif [ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]; then
     precmd_functions=(_dot_fix_precmd "${precmd_functions[@]}")
     bind -x '"\eOP": _dot_fix_accept_bash' 2>/dev/null
     bind -x '"\e[11~": _dot_fix_accept_bash' 2>/dev/null
+    bind -x '"\C-g": _dot_fix_accept_bash' 2>/dev/null
 fi

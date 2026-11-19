@@ -154,7 +154,7 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
   done, for how long, what about) and jumps there; Leader ? opens Claude in a
   side pane already told about the folder, git state and the last output.
 - **Self-healing typos**: after a failed command with an obvious mistake, a 💡
-  fix shows under the zsh prompt; F1 puts it on the command line (never runs
+  fix shows under the zsh prompt; Ctrl+G (or F1) puts it on the command line (never runs
   it). `DOT_FIX=0` turns it off.
 - **Push-to-talk**: Alt+V, speak, any key → `ai "…"` on the command line.
   Speech-to-text is whisper.cpp on this machine; no audio leaves it.
