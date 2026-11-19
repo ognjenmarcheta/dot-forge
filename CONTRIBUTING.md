@@ -1,7 +1,13 @@
 # Contributing
 
-This is a personal setup, so changes keep it working on both macOS and
-Linux (Ubuntu) and keep logins and per-machine settings out of the repo.
+Dot Forge is a personal setup. **Only the owner commits here**: pull requests and
+issues from others are turned off. You're welcome to **fork or clone it** and
+make it yours (the README's quick start says which defaults to change).
+Found a security problem? See [`SECURITY.md`](SECURITY.md).
+
+The rules below are how the owner (and the coding agents working for them)
+change this repo: changes keep it working on both macOS and Linux (Ubuntu)
+and keep logins and per-machine settings out of the repo.
 
 ## Working rules
 
