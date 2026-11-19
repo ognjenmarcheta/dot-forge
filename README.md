@@ -8,7 +8,9 @@ Every AI feature runs through `config/scripts/dot-ai`: Claude Code on **your
 Claude subscription login only** — API-key variables are removed and it refuses
 to run if Claude Code reports any other login (`dot-ai --check`).
 
-Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned),
+Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned;
+uncommitted edits are kept, and if the pull can't happen it says why and
+upgrades the tools anyway),
 `dot save "msg"` (commit + push your config edits), `dot doctor`, `dot keys`.
 
 ## New machine
