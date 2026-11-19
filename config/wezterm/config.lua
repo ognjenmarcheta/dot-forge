@@ -201,7 +201,9 @@ if not wezterm.target_triple:find("darwin") then
 end
 
 -- tmux
-config.leader = { key = "q", mods = "ALT", timeout_milliseconds = 2000 }
+-- Alt+q, then a key (features.apply_leader turns these into a key table
+-- that shows the keys in the tab bar and waits 4 s)
+config.leader = { key = "q", mods = "ALT" }
 config.keys = {
     {
         mods = "LEADER",
