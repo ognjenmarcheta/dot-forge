@@ -3,7 +3,8 @@
 #
 #   dot status          what changed in the repo (configs are links, so edits show up here)
 #   dot save "message"  commit everything and push
-#   dot upgrade         pull, re-link, upgrade tools (Neovim plugins stay pinned)
+#   dot upgrade         pull, re-link, upgrade tools (Neovim plugins stay pinned), then
+#                       restart WezTerm's sessions so every tab gets it (--keep-sessions)
 #   dot doctor [--nvim] check this machine matches the dotfiles
 #   dot edit            open the repo in your editor
 #   dot keys            cheat sheet of the shortcuts this setup adds
@@ -15,7 +16,8 @@
 #   dot load-game NAME  bring a saved workspace back (also after a reboot)
 #   dot games           list saves
 #   dot sync-history    sync shell history between your machines (atuin + Bitwarden)
-#   dot sessions [kill] WezTerm tabs kept in the background / end them all
+#   dot sessions [kill|restart]  WezTerm tabs kept in the background / end them all /
+#                       end them so reopening WezTerm starts fresh with the new setup
 #   dot new NAME        new project from Kaine Forge (--client acme, --local, --dry-run)
 #   dot night "repo: task"  Claude works on it overnight in a worktree (dot night = queue)
 #   dot recall PATTERN  search what your commands printed (--ai "question", --last 5)
@@ -49,6 +51,7 @@ keys() {
     cat <<'EOF'
 WezTerm  (leader = Alt+q, then the key)
   Leader c / x        new tab / close pane         Leader | / -   split right / down
+  Cmd+W / Ctrl+Shift+W  close the tab (no "really?" — it just closes)
   Leader b / n        previous / next tab          Leader 0-9     go to tab
   Leader w / W        pick workspace / new one     Leader arrows  resize pane
   Ctrl+h/j/k/l        move between panes AND Neovim splits (falls through to the
@@ -71,6 +74,8 @@ WezTerm  (leader = Alt+q, then the key)
   save points         palette "Save game" / "Load game…", or dot save-game / load-game / games
   closing the window  tabs keep running; reopen WezTerm to get them back
                       (dot sessions = list them, dot sessions kill = end all)
+  dot upgrade         ends the sessions afterwards so every tab gets the new setup
+                      (asks first if Claude is running in a tab; --keep-sessions = don't)
 
 Shell
   z <name> / z <Tab>  jump to a frequent folder / pick from a menu
@@ -199,12 +204,63 @@ sync_history() {
     atuin sync && echo "✓ history synced; it keeps syncing in the background"
 }
 
+# The session server's process (tests use their own name, so they can never
+# end your real sessions).
+MUX="${DOT_MUX_PATTERN:-wezterm-mux-server}"
+
+# Claude Code sessions running inside WezTerm's tabs: a `claude` process
+# whose parents include the session server.
+agents_in_sessions() {
+    local n=0 pid p args
+    for pid in $(pgrep -x claude 2>/dev/null); do
+        p="$pid"
+        while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+            args="$(ps -o args= -p "$p" 2>/dev/null)"
+            case "$args" in *"$MUX"*) n=$((n + 1)); break ;; esac
+            p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+        done
+    done
+    echo "$n"
+}
+
+# Tabs live in WezTerm's session server and survive closing the window, so a
+# tab keeps the setup its shell started with (shell functions, prompt hooks,
+# the startup card). After an upgrade, end the server: reopening WezTerm then
+# starts every tab with the new setup. `dot upgrade` usually runs in one of
+# those tabs, so the server is ended a few seconds later by a process that
+# outlives the tab, after everything else is done.
+restart_sessions() {
+    pgrep -f "$MUX" >/dev/null 2>&1 || return 0
+    local agents a delay="${DOT_SESSIONS_DELAY:-3}"
+    agents="$(agents_in_sessions)"
+    if [ "$agents" -gt 0 ]; then
+        if [ -t 0 ]; then
+            printf '%s Claude session(s) are running in your WezTerm tabs; restarting ends them. Restart now? [y/N] ' "$agents"
+            read -r a || a=n
+        else
+            a=n
+        fi
+        case "$a" in
+            y|Y|yes) ;;
+            *) echo "Kept your WezTerm sessions: new tabs have the update, tabs from before keep the old setup."
+               # shellcheck disable=SC2016
+               echo '  `dot sessions restart` when the agents are done.'
+               return 0 ;;
+        esac
+    fi
+    echo "↻ Restarting WezTerm's sessions so every tab gets the new setup: WezTerm closes in ${delay} s — open it again."
+    # shellcheck disable=SC2016
+    echo '  (`dot upgrade --keep-sessions` skips this; dot save-game / load-game keep a workspace)'
+    nohup sh -c "sleep $delay; pkill -f '$MUX'" >/dev/null 2>&1 &
+}
+
 sessions() {
+    if [ "${1:-}" = restart ]; then restart_sessions; return; fi
     command -v wezterm >/dev/null || { echo "wezterm not found"; exit 1; }
     if [ "${1:-}" = kill ]; then
         printf 'End ALL WezTerm sessions, including running programs? [y/N] '
         read -r a; case "$a" in y|Y|yes) ;; *) exit 0 ;; esac
-        if pkill -f wezterm-mux-server; then echo "✓ session server stopped"; else echo "no session server running"; fi
+        if pkill -f "$MUX"; then echo "✓ session server stopped"; else echo "no session server running"; fi
         return
     fi
     wezterm cli --prefer-mux list 2>/dev/null || echo "no session server running (persistent sessions off?)"
@@ -223,8 +279,11 @@ case "${1:-help}" in
         git -C "$DOT" push
         ;;
     upgrade|up)
+        keep=0
+        [ "${2:-}" = --keep-sessions ] && keep=1
         git -C "$DOT" pull --ff-only
         "$DOT/install.sh" --upgrade
+        [ "$keep" = 1 ] || restart_sessions
         ;;
     doctor|check)
         shift

@@ -8,7 +8,8 @@ Every AI feature runs through `config/scripts/dot-ai`: Claude Code on **your
 Claude subscription login only** — API-key variables are removed and it refuses
 to run if Claude Code reports any other login (`dot-ai --check`).
 
-Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned),
+Day to day: `dot upgrade` (pull + upgrade tools; Neovim plugins stay pinned;
+then WezTerm's sessions restart so every tab gets the new setup),
 `dot save "msg"` (commit + push your config edits), `dot doctor`, `dot keys`.
 
 ## New machine
@@ -109,7 +110,9 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 - **Sessions survive closing WezTerm**: tabs run in WezTerm's background
   session server; reopening the window brings them back (agents and dev
   servers keep running). `dot sessions` lists them, `dot sessions kill` ends
-  all. Linux uses the regular WezTerm from its apt repository, because the
+  all. Because a tab keeps the setup its shell started with, `dot upgrade`
+  ends the sessions when it's done (WezTerm closes; open it again) — it asks
+  first if Claude is running in a tab, and `--keep-sessions` skips it. Linux uses the regular WezTerm from its apt repository, because the
   Flatpak's sandbox can't keep anything running. Turn off per machine with
   `persistent_sessions = false` in `~/.config/wezterm/machine.lua`.
 - **Project colours**: every git repo gets its own colour, shown as a stripe
