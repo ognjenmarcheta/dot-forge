@@ -50,7 +50,7 @@ DOT="$(find_repo)"
 
 keys() {
     cat <<'EOF'
-WezTerm  (leader = Alt+q, then the key)
+WezTerm  (leader = Alt+q, then the key; the tab bar lists the keys for 4 s, Esc cancels)
   Leader c / x        new tab / close pane         Leader | / -   split right / down
   Cmd+W / Ctrl+Shift+W  close the tab (no "really?" — it just closes)
   Leader b / n        previous / next tab          Leader 0-9     go to tab

@@ -36,4 +36,7 @@ end
 local selected_theme = detect_theme():gsub("%s+", "") -- strip whitespace/newlines
 config.color_scheme = themes[selected_theme]
 
+-- last: every mods = "LEADER" binding moves into the Alt+q key table
+require("features").apply_leader(config)
+
 return config
