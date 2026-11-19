@@ -46,3 +46,4 @@ jobs:
           /bin/bash tests/hello.sh
           /bin/bash tests/ports.sh
           /bin/bash tests/wrapped.sh
+          /bin/bash tests/find.sh

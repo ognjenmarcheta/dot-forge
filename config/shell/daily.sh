@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Once a day, at your first prompt: what the night shift did (dot night) and,
-# once a week, how many shortcut ideas dot habits has. One line each, no waiting
+# once a week, how many shortcut ideas dot habits has. Also refreshes the
+# dot find index (z "the billing thing") in the background. One line each, no waiting
 # (the habits count is worked out in the background). Loaded by aliases.sh.
 
 _dot_daily_state="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles"
@@ -41,6 +42,8 @@ _dot_daily() {
         touch "$_dot_daily_state/janitor-checked"
         ( "$HOME/.config/scripts/dot" janitor --check > "$jan.tmp" 2>/dev/null && mv "$jan.tmp" "$jan" & ) >/dev/null 2>&1
     fi
+    # dot find: re-read the projects (README, commits) so z "…" knows them
+    ( "$HOME/.config/scripts/dot" find --index --quiet >/dev/null 2>&1 & ) >/dev/null 2>&1
     # dot try sandboxes past their 24 h
     if [ -d "${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/try" ] && command -v docker >/dev/null 2>&1; then
         ( "$HOME/.config/scripts/dot" try clean >/dev/null 2>&1 & ) >/dev/null 2>&1

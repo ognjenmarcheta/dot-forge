@@ -21,6 +21,7 @@
 #   dot new NAME        new project from Kaine Forge (--client acme, --local, --dry-run)
 #   dot night "repo: task"  Claude works on it overnight in a worktree (dot night = queue)
 #   dot recall PATTERN  search what your commands printed (--ai "question", --last 5)
+#   dot find "what"     a project by what it is: README, client, commits (z "…" uses it)
 #   dot habits          turn long commands you keep typing into aliases
 #   dot mode share [CLIENT]  screen-share mode (dot mode work to end)
 #   dot invite          a read-only browser link to one terminal tab (--for 2h, stop)
@@ -79,6 +80,7 @@ WezTerm  (leader = Alt+q, then the key)
 
 Shell
   z <name> / z <Tab>  jump to a frequent folder / pick from a menu
+  z "what it is"      2+ words zoxide can't match → the project they describe (dot find)
   y                   yazi file manager (cd's to where you quit)
   → (right arrow)     accept the grey suggestion (zsh); Ctrl+→ takes one word
   Tab                 fuzzy completion menu with previews (zsh, fzf-tab)
@@ -342,7 +344,7 @@ case "${1:-help}" in
         shift
         exec "$tool" "$@"
         ;;
-    night|recall|habits|janitor|evolve)
+    night|recall|habits|janitor|evolve|find)
         tool="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/dot-$1"
         shift
         if command -v uv >/dev/null 2>&1; then

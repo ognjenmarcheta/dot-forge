@@ -154,6 +154,14 @@ newer distros' Neovim 0.12 break avante and rainbow-delimiters.
 - **Self-healing typos**: after a failed command with an obvious mistake, a 💡
   fix shows under the zsh prompt; F1 puts it on the command line (never runs
   it). `DOT_FIX=0` turns it off.
+- **`z` by meaning**: `z "the mandarin app"` or `z billing acme` — when
+  zoxide can't match two or more words, `dot find` picks the project they
+  describe from its README, description, client (`clients.toml`), top-level
+  files and recent commits (worktrees too). A small embedding model runs on
+  this machine (fastembed via uv, downloaded once, ~0.4 s a search); nothing is
+  sent anywhere, and without it keyword matching still works. A close call
+  opens an fzf picker. `dot find "…"` lists the matches and why; the index
+  refreshes once a day (`dot find --index` now).
 - **Push-to-talk**: Alt+V, speak, any key → `ai "…"` on the command line.
   Speech-to-text is whisper.cpp on this machine; no audio leaves it.
 - **Project lobby**: cd into a repo after 3+ days away → card with branch, your

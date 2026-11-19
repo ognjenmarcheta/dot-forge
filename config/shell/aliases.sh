@@ -291,6 +291,28 @@ if [ -n "$BASH_VERSION" ] && _dot_has zoxide && declare -F __zoxide_z_complete_h
     complete -F _z_recent_complete -o filenames -- z
 fi
 
+# --- z by meaning: z "the billing thing for acme" -----------------------------
+# Two or more words that zoxide can't match → dot find picks the project by
+# what it is (README, description, client, recent commits; a local model, no
+# network). Wraps whatever z is at this point, so zoxide's own matching (and
+# any typo fallback) still comes first.
+if _dot_has zoxide && type z >/dev/null 2>&1 && [ -x "$HOME/.config/scripts/dot-find" ]; then
+    eval "$(declare -f z | sed '1s/^z *()/_dot_z_words ()/')"
+    z() {
+        local _a _d
+        for _a in "$@"; do
+            case "$_a" in -*|/*|./*|../*|'~'*) _dot_z_words "$@"; return ;; esac
+        done
+        case "$*" in *" "*) ;; *) _dot_z_words "$@"; return ;; esac
+        if command zoxide query --exclude "$PWD" -- "$@" >/dev/null 2>&1; then
+            _dot_z_words "$@"; return
+        fi
+        if _dot_has uv; then _d="$("$HOME/.config/scripts/dot-find" --cd -- "$*")" || return 1
+        else _d="$(python3 "$HOME/.config/scripts/dot-find" --cd -- "$*")" || return 1; fi
+        [ -n "$_d" ] && _dot_z_words "$_d"
+    }
+fi
+
 # --- zsh: syntax highlighting — must come after every other widget -----------
 # (commands turn red when they don't exist, before you press Enter)
 if [ -n "$ZSH_VERSION" ] && [[ -o zle ]] && [ -f "$_dot_zp/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]; then
