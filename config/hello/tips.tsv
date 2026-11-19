@@ -44,3 +44,4 @@ voice	-	Alt+V, speak, any key: push-to-talk turns what you said into an ai comma
 fixf1	-	after a typo, a 💡 fix shows under the prompt — F1 puts it on the command line
 emoji	-	Ctrl+Shift+U: emoji and symbol picker
 history	-	Ctrl+R searches your whole shell history; → accepts the grey suggestion as you type
+find	^(dot find|z [^ ]+ [^ ]+)	z "the mandarin app" jumps to a project by what it is (README, client, commits) when you forget its folder name — dot find lists the matches

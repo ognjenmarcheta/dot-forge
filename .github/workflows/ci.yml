@@ -40,6 +40,8 @@ jobs:
         run: bash tests/ports.sh
       - name: dot wrapped / credits / calendar
         run: bash tests/wrapped.sh
+      - name: dot find / z by meaning
+        run: bash tests/find.sh
       - name: dot invite for real (tmux + ttyd, --local)
         run: |
           export XDG_STATE_HOME="$RUNNER_TEMP/state"
