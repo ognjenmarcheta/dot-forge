@@ -51,7 +51,7 @@ tools, and one command (`dot`) keeps them up to date.
 
 ## 🚀 Quick start
 
-The repo is private, so log in to GitHub first.
+Clone it to `~/Github/dotfiles` and run the installer. It installs everything else, including `gh`.
 
 <details open>
 <summary><b>🍎 macOS</b></summary>
@@ -59,9 +59,7 @@ The repo is private, so log in to GitHub first.
 ```bash
 xcode-select --install                     # git + compilers (wait for it to finish)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-eval "$(/opt/homebrew/bin/brew shellenv)" && brew install gh
-gh auth login
-gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
+git clone https://github.com/ognjenmarcheta/dotfiles ~/Github/dotfiles
 ~/Github/dotfiles/install.sh
 ```
 
@@ -71,9 +69,8 @@ gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
 <summary><b>🐧 Linux (Ubuntu / Debian)</b></summary>
 
 ```bash
-sudo apt install -y git gh
-gh auth login
-gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
+sudo apt install -y git
+git clone https://github.com/ognjenmarcheta/dotfiles ~/Github/dotfiles
 ~/Github/dotfiles/install.sh
 ```
 
@@ -83,12 +80,19 @@ gh repo clone ognjenmarcheta/dotfiles ~/Github/dotfiles
 not stored in the repo. The startup card lists whatever is still missing
 (`dot hello setup`):
 
+- [ ] `gh auth login` (PRs, CI status, `dot new`, standups)
 - [ ] `claude`: log in once (needed for `ai` and every other AI feature)
 - [ ] `:Copilot auth` in Neovim
 - [ ] `atuin login`, only if you use history sync (`dot sync-history`)
 
 On a new machine the installer also asks for your git name and email. They're
 saved in `~/.config/git/local`, which is not committed.
+
+> [!TIP]
+> **Using it yourself?** Fork it, clone your fork, and point the few
+> owner-specific defaults at your own account: `export GITHUB_USER=you` in
+> `~/.zshenv` (clickable prompt links), `ci_repo` in `config/wezterm/machine.lua`
+> (status bar CI), and `DOT_NEW_TEMPLATE` for `dot new`.
 
 | Installer flag | Does |
 |---|---|
