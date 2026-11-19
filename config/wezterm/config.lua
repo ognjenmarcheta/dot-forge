@@ -336,6 +336,21 @@ for _, k in ipairs({ "h", "j", "k", "l" }) do
     table.insert(config.keys, split_nav("resize", k))
 end
 
+-- Shift+Enter: a new line instead of running the command. WezTerm sends a
+-- plain Enter for it, so send Esc Enter, which zsh (aliases.sh) and Claude
+-- Code both read as "new line". Neovim gets the real Shift+Enter.
+table.insert(config.keys, {
+    key = "Enter",
+    mods = "SHIFT",
+    action = wezterm.action_callback(function(win, pane)
+        if is_nvim(pane) then
+            win:perform_action({ SendKey = { key = "Enter", mods = "SHIFT" } }, pane)
+        else
+            win:perform_action({ SendString = "\x1b\r" }, pane)
+        end
+    end),
+})
+
 for i = 0, 9 do
     -- leader + number to activate that tab
     table.insert(config.keys, {

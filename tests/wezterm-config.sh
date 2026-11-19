@@ -34,6 +34,7 @@ need "Leader Space (quick select)" "key = '(phys:)?Space', mods = 'NONE', action
 need "Leader Esc (cancel)" "key = 'Escape', mods = 'NONE', action = act.Multiple\\{ 'PopKeyTable'" "escape"
 need "Shift+Up (prev command)" "key = 'UpArrow', mods = 'SHIFT'"
 need "Ctrl+h (pane/split nav)" "key = 'h', mods = 'CTRL'"
+need "Shift+Enter (new line)" "key = 'Enter', mods = 'SHIFT'"
 need "Leader w (workspaces)" "key = 'w', mods = 'NONE', action = act.Multiple\\{ \\{ ShowLauncherArgs" "'w'"
 if printf '%s' "$keys" | grep -q "mods = '[A-Z|]*LEADER"; then
     echo "✗ a LEADER binding was left outside the leader table"; fails=1
