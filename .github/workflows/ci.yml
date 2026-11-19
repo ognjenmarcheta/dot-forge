@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ fromJSON(github.event.repository.visibility == 'private' && vars.CI_SELF_HOSTED_LINUX == 'true' && fromJSON(vars.CI_SELF_HOSTED_LINUX) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","linux","x64","kaine-ci-linux"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Lint tools
         run: |
           sudo apt-get update -qq
@@ -87,7 +87,7 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }} # release lookups without the 60/h API limit
       NVIM_SMOKE_WAIT_MS: "20000"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Fresh home folder (like a new machine)
         run: |
           mkdir -p "$RUNNER_TEMP/home"
