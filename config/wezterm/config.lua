@@ -166,8 +166,14 @@ config.keys = {
     {
         mods = "LEADER",
         key = "x",
-        action = wezterm.action.CloseCurrentPane { confirm = true }
+        action = wezterm.action.CloseCurrentPane { confirm = false }
     },
+    -- close a tab without "Really kill this tab?" (with persistent sessions
+    -- WezTerm can't see what runs in a tab, so its own binding always asked)
+    { mods = "SUPER", key = "w", action = wezterm.action.CloseCurrentTab { confirm = false } },
+    { mods = "CTRL|SHIFT", key = "w", action = wezterm.action.CloseCurrentTab { confirm = false } },
+    { mods = "CTRL|SHIFT", key = "W", action = wezterm.action.CloseCurrentTab { confirm = false } },
+    { mods = "CTRL", key = "W", action = wezterm.action.CloseCurrentTab { confirm = false } },
     {
         mods = "LEADER",
         key = "b",
