@@ -221,15 +221,26 @@ done
 printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
 printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
 printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
+# secrets passed as arguments: a recovery phrase, a key after a flag
+phrase="alpha bravo delta echo golf hotel india juliet kilo lima mike oscar"
+for _ in 1 2 3; do
+    printf '%s\t1\t1s\t%s\tatuin store rekey "%s"\n' "$now" "$T" "$phrase" >> "$E"
+    printf '%s\t1\t1s\t%s\twallet restore "%s"\n' "$now" "$T" "$phrase" >> "$E"
+    printf '%s\t1\t1s\t%s\tvaultcli open --password hunter2secret\n' "$now" "$T" >> "$E"
+done
+# rows from `atuin import`: exit -1 (unknown), no folder — not failures
+for _ in 1 2 3 4 5; do printf '%s\t-1\t0s\tunknown\timported-cmd --flag\n' "$now" >> "$E"; done
 export DOT_EVOLVE_FROM="$E" DOT_EVOLVE_NO_DOCTOR=1
 unset DOT_EVOLVE
 rm -f "$XDG_STATE_HOME/dotfiles/evolve-last"
 out=$(python3 "$S/dot-evolve")
 check "repeated failures" '[[ "$out" == *"pnpm test --filter api"*"4×"* ]]'
+check "imported history (unknown result) isn't a failure" '[[ "$out" != *imported-cmd* ]]'
 check "command not found" '[[ "$out" == *"httpie"* ]]'
 check "repeated lookups" '[[ "$out" == *"tldr: tar"* ]]'
 check "morning ritual" '[[ "$out" == *"docker compose up"*"pnpm db:migrate"*"git pull"* ]]'
 check "secrets masked" '[[ "$out" != *abc123secret* ]]'
+check "recovery phrases and keys after a flag masked" '[[ "$out" != *"bravo delta"* && "$out" != *hunter2secret* && "$out" == *"atuin store rekey •••"* && "$out" == *"--password •••"* ]]'
 # the dotfiles repo it improves (a throwaway one with an origin)
 git init -q --bare "$T/dots-origin.git"
 git clone -q "$T/dots-origin.git" "$T/Github/dotfiles" 2>/dev/null
@@ -352,6 +363,19 @@ check "…and it's counted" '[[ "$out" == *"1 Claude session"* ]] || [[ "$out" =
 pkill -P "$srv" 2>/dev/null; kill "$srv" 2>/dev/null
 check "no session server → nothing to do" '[ -z "$(bash "$S/dot" sessions restart </dev/null)" ]'
 unset DOT_MUX_PATTERN DOT_SESSIONS_DELAY DOTFILES_DIR
+
+echo "dot sync-history"
+# a stand-in atuin that is logged in but can't sync
+mkdir -p "$T/syncbin" "$XDG_DATA_HOME/atuin"
+printf '#!/bin/sh\n[ "$1" = sync ] && { echo "Error: stand-in sync error" >&2; exit 1; }\nexit 0\n' > "$T/syncbin/atuin"
+chmod +x "$T/syncbin/atuin"
+touch "$XDG_DATA_HOME/atuin/session"
+out=$(PATH="$T/syncbin:$PATH" DOTFILES_DIR="$DOT" bash "$S/dot" sync-history 2>&1 </dev/null); rc=$?
+check "a failed sync says what to try, and still fails" '[ "$rc" != 0 ] && [[ "$out" == *"stand-in sync error"* && "$out" == *"atuin logout"* && "$out" == *"Never put the key"* ]]'
+printf '#!/bin/sh\nexit 0\n' > "$T/syncbin/atuin"
+out=$(PATH="$T/syncbin:$PATH" DOTFILES_DIR="$DOT" bash "$S/dot" sync-history 2>&1 </dev/null); rc=$?
+check "a working sync stays quiet about it" '[ "$rc" = 0 ] && [[ "$out" != *"couldn'"'"'t sync"* ]]'
+rm -f "$XDG_DATA_HOME/atuin/session"
 
 [ -n "${KEEP:-}" ] || rm -rf "$T"; echo "T=$T"
 echo

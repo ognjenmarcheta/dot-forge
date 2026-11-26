@@ -164,10 +164,29 @@ bw_ready() {
 
 ATUIN_BW_ITEM="atuin sync key"
 
+# atuin's own error is printed above this; say what usually fixes it. Only
+# commands that keep your history: nothing here deletes or re-encrypts.
+sync_failed() {
+    cat >&2 <<EOF
+
+dot sync-history: atuin couldn't sync (its error is above). What usually helps:
+  login expired, wrong password    atuin logout, then dot sync-history again
+  "incorrect key", can't decrypt   this machine's key isn't the account's: atuin logout,
+                                   then dot sync-history (it reads the key from Bitwarden,
+                                   note "$ATUIN_BW_ITEM", or asks for it)
+  still the key afterwards         atuin store verify shows which local records need the old key
+  no network / server down         try again later; history keeps working locally
+Never put the key on a command line: it would land in your shell history.
+EOF
+    exit 1
+}
+
 sync_history() {
     command -v atuin >/dev/null || { echo "atuin isn't installed (run install.sh)"; exit 1; }
     if [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/session" ]; then
-        echo "Already syncing:"; atuin status 2>/dev/null | sed -n '1,6p'; atuin sync; return
+        echo "Already syncing:"; atuin status 2>/dev/null | sed -n '1,6p' || true
+        atuin sync || sync_failed
+        return
     fi
     echo "Sync shell history (Ctrl+R, and the grey suggestions in zsh) between your"
     echo "machines. End-to-end encrypted: the server only stores encrypted data; the"
@@ -204,7 +223,8 @@ sync_history() {
             fi
             ;;
     esac
-    atuin sync && echo "✓ history synced; it keeps syncing in the background"
+    atuin sync || sync_failed
+    echo "✓ history synced; it keeps syncing in the background"
 }
 
 # The session server's process (tests use their own name, so they can never

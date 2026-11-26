@@ -127,6 +127,13 @@
 #   "^secret-cmd",
 #   "^innocuous-cmd .*--secret=.+",
 # ]
+## Commands that carry atuin's own key or a password as an argument stay out
+## of history (it syncs to every machine). `dot sync-history` never needs them.
+history_filter = [
+  '^\s*atuin\s+store\s+rekey\s+\S',
+  '^\s*atuin\s+(login|register)\s.*(-k|--key|-p|--password)[ =]',
+  '^\s*bw\s+unlock\s+[^-\s]',
+]
 
 ## prevent commands run with cwd matching any of these regexes from being written
 ## to history. Note that these regular expressions are unanchored, i.e. if they don't
