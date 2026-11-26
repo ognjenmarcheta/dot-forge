@@ -221,11 +221,14 @@ done
 printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
 printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
 printf '%s\t1\t1s\t%s\tcurl -H "Authorization: Bearer abc123secret" https://x\n' "$now" "$T" >> "$E"
+# rows from `atuin import`: exit -1 (unknown), no folder — not failures
+for _ in 1 2 3 4 5; do printf '%s\t-1\t0s\tunknown\timported-cmd --flag\n' "$now" >> "$E"; done
 export DOT_EVOLVE_FROM="$E" DOT_EVOLVE_NO_DOCTOR=1
 unset DOT_EVOLVE
 rm -f "$XDG_STATE_HOME/dotfiles/evolve-last"
 out=$(python3 "$S/dot-evolve")
 check "repeated failures" '[[ "$out" == *"pnpm test --filter api"*"4×"* ]]'
+check "imported history (unknown result) isn't a failure" '[[ "$out" != *imported-cmd* ]]'
 check "command not found" '[[ "$out" == *"httpie"* ]]'
 check "repeated lookups" '[[ "$out" == *"tldr: tar"* ]]'
 check "morning ritual" '[[ "$out" == *"docker compose up"*"pnpm db:migrate"*"git pull"* ]]'

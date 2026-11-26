@@ -129,8 +129,10 @@ def report() -> dict:
         return out
 
     # 1. the same command keeps failing
-    fails = Counter(key(r["cmd"]) for r in rows if r["exit"] not in ("0", "", "130", "141", "148", "127"))
-    last_fail = {key(r["cmd"]): r for r in rows if r["exit"] not in ("0", "", "127")}
+    # (-1 = atuin doesn't know how it ended: rows from `atuin import`, which
+    # also have no folder, and commands whose shell closed first — not failures)
+    fails = Counter(key(r["cmd"]) for r in rows if r["exit"] not in ("0", "", "-1", "130", "141", "148", "127"))
+    last_fail = {key(r["cmd"]): r for r in rows if r["exit"] not in ("0", "", "-1", "127")}
     for k, n in fails.most_common(8):
         if n < 3:
             break
