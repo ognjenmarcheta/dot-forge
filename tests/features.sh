@@ -364,6 +364,19 @@ pkill -P "$srv" 2>/dev/null; kill "$srv" 2>/dev/null
 check "no session server → nothing to do" '[ -z "$(bash "$S/dot" sessions restart </dev/null)" ]'
 unset DOT_MUX_PATTERN DOT_SESSIONS_DELAY DOTFILES_DIR
 
+echo "dot sync-history"
+# a stand-in atuin that is logged in but can't sync
+mkdir -p "$T/syncbin" "$XDG_DATA_HOME/atuin"
+printf '#!/bin/sh\n[ "$1" = sync ] && { echo "Error: stand-in sync error" >&2; exit 1; }\nexit 0\n' > "$T/syncbin/atuin"
+chmod +x "$T/syncbin/atuin"
+touch "$XDG_DATA_HOME/atuin/session"
+out=$(PATH="$T/syncbin:$PATH" DOTFILES_DIR="$DOT" bash "$S/dot" sync-history 2>&1 </dev/null); rc=$?
+check "a failed sync says what to try, and still fails" '[ "$rc" != 0 ] && [[ "$out" == *"stand-in sync error"* && "$out" == *"atuin logout"* && "$out" == *"Never put the key"* ]]'
+printf '#!/bin/sh\nexit 0\n' > "$T/syncbin/atuin"
+out=$(PATH="$T/syncbin:$PATH" DOTFILES_DIR="$DOT" bash "$S/dot" sync-history 2>&1 </dev/null); rc=$?
+check "a working sync stays quiet about it" '[ "$rc" = 0 ] && [[ "$out" != *"couldn'"'"'t sync"* ]]'
+rm -f "$XDG_DATA_HOME/atuin/session"
+
 [ -n "${KEEP:-}" ] || rm -rf "$T"; echo "T=$T"
 echo
 if [ "$fails" -eq 0 ]; then echo "features: all good"; else echo "features: $fails failed"; exit 1; fi
