@@ -43,6 +43,13 @@ SECRETS = [  # (pattern, replacement) — applied in order
     (re.compile(r"(?i)((?:token|secret|passw(?:or)?d|api[_-]?key)[\w-]*\s*[=:]\s*)[^\s\"']+"), r"\1•••"),
     (re.compile(r"(ghp_\w+|gho_\w+|github_pat_\w+|sk-ant-[\w-]+|sk-\w{20,}|AKIA[A-Z0-9]{16}|xox[bpas]-[\w-]+)"), "•••"),
     (re.compile(r"(://[^/\s:@]+:)[^@\s]+@"), r"\1•••@"),
+    # --password VALUE / --api-key VALUE (the `=` form is covered above)
+    (re.compile(r"(?i)(--?[\w-]*(?:token|secret|passw(?:or)?d|key)\s+)(?:\"[^\"]*\"|'[^']*'|[^\s-]\S*)"), r"\1•••"),
+    # atuin's own key: `atuin login -k KEY`, `atuin store rekey KEY`
+    (re.compile(r"(\batuin\s+(?:login|register)\b.*?\s-[kp]\s+)(?:\"[^\"]*\"|'[^']*'|\S+)"), r"\1•••"),
+    (re.compile(r"(\batuin\s+store\s+rekey\s+).+"), r"\1•••"),
+    # recovery phrases: 12+ short lowercase words in a row
+    (re.compile(r"\b(?:[a-z]{3,8}\s+){11,}[a-z]{3,8}\b"), "•••"),
 ]
 LOOKUP = re.compile(r"^(ai(?: explain)?|tldr|man|cheat|navi --query)\s+(.+)$|^(\S+)(?:\s+\S+)?\s+(?:--help|-h)$")
 
@@ -164,7 +171,8 @@ def report() -> dict:
         for a, b, c in zip(rs, rs[1:], rs[2:]):
             if (c["t"] - a["t"]).total_seconds() > 1800:
                 continue
-            trio = (key(a["cmd"], 4), key(b["cmd"], 4), key(c["cmd"], 4))
+            # masked before shortening: half a secret no longer looks like one
+            trio = (key(mask(a["cmd"]), 4), key(mask(b["cmd"]), 4), key(mask(c["cmd"]), 4))
             if len(set(trio)) == 3 and not any(x.startswith(("cd", "z ", "ls", "ll", "clear")) for x in trio):
                 seq[(cwd, trio)].add(a["t"].date())
     rituals = sorted(((len(days), cwd, trio) for (cwd, trio), days in seq.items() if len(days) >= 3), reverse=True)
@@ -174,7 +182,7 @@ def report() -> dict:
     durs = defaultdict(list)
     for r in rows:
         if r["exit"] == "0" and not r["cmd"].startswith(("ssh", "nvim", "vim", "claude", "y ", "lazygit", "btop", "sleep", "watch", "tail -f", "docker compose up", "pnpm dev", "npm run dev", "just dev")):
-            durs[key(r["cmd"])].append(r["dur"])
+            durs[key(mask(r["cmd"]))].append(r["dur"])
     slow = [(sorted(v)[len(v) // 2], k, len(v)) for k, v in durs.items() if len(v) >= 5]
     out["slow"] = [{"cmd": mask(k), "median_s": round(m), "times": n} for m, k, n in sorted(slow, reverse=True) if m >= 45][:5]
 
